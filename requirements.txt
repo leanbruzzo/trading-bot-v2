@@ -1,4 +1,4 @@
-binance-futures-connector
-pandas
-numpy
-requests
+binance-futures-connector==4.1.0
+pandas==2.2.2
+numpy==1.26.4
+requests==2.32.3
