@@ -1,9 +1,11 @@
 """
 MÓDULO 6: Telegram Notifier
 Envía alertas y notificaciones al usuario via Telegram Bot API.
+Incluye comando /status para consultar posiciones abiertas.
 """
 import requests
 import logging
+import threading
 from config.settings import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
 logger = logging.getLogger("bot.telegram")
@@ -14,6 +16,16 @@ except ImportError:
     DRY_RUN = False
 
 DRY_LABEL = "🔵 <b>[SIMULADO]</b> " if DRY_RUN else ""
+
+# Referencia global a open_trades (se setea desde main.py)
+_open_trades_ref = None
+_last_update_id  = 0
+
+
+def set_trades_ref(trades: dict):
+    """Registra la referencia al dict de posiciones abiertas."""
+    global _open_trades_ref
+    _open_trades_ref = trades
 
 
 def send_message(text: str, parse_mode: str = "HTML") -> bool:
@@ -28,6 +40,90 @@ def send_message(text: str, parse_mode: str = "HTML") -> bool:
     except Exception as e:
         logger.error(f"Error enviando mensaje Telegram: {e}")
         return False
+
+
+def handle_status_command(open_trades: dict):
+    """Genera y envía el mensaje de status con posiciones abiertas."""
+    from modules.order_executor import get_current_price
+    from modules.risk_manager   import load_risk_state
+
+    if not open_trades:
+        send_message("📭 <b>No hay posiciones abiertas actualmente.</b>")
+        return
+
+    state    = load_risk_state()
+    total_pnl = 0.0
+    lines    = ["📊 <b>POSICIONES ABIERTAS</b>\n━━━━━━━━━━━━━━━"]
+
+    for symbol, trade in open_trades.items():
+        price = get_current_price(symbol)
+        if not price:
+            continue
+
+        side  = trade["side"]
+        entry = trade["entry"]
+        qty   = trade["qty"]
+
+        if side == "LONG":
+            pnl = (price - entry) * qty
+        else:
+            pnl = (entry - price) * qty
+
+        total_pnl += pnl
+        pnl_emoji  = "🟢" if pnl >= 0 else "🔴"
+        partial    = "✅ Partial TP tomado" if trade.get("partial_done") else "⏳ Esperando Partial TP"
+
+        lines.append(
+            f"\n{pnl_emoji} <b>{symbol}</b> — {side}\n"
+            f"  Entrada:  ${entry:,.2f}\n"
+            f"  Precio:   ${price:,.2f}\n"
+            f"  P&L:      <b>${pnl:+.2f} USDT</b>\n"
+            f"  Stop:     ${trade['stop']:,.2f}\n"
+            f"  {partial}"
+        )
+
+    total_emoji = "🟢" if total_pnl >= 0 else "🔴"
+    lines.append(f"\n━━━━━━━━━━━━━━━")
+    lines.append(f"{total_emoji} <b>P&L Total: ${total_pnl:+.2f} USDT</b>")
+    lines.append(f"📅 P&L del día: ${state.get('daily_pnl', 0):+.2f} USDT")
+
+    send_message("\n".join(lines))
+
+
+def poll_commands(open_trades: dict):
+    """Escucha comandos de Telegram en un hilo separado."""
+    global _last_update_id
+    while True:
+        try:
+            url  = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getUpdates"
+            params = {"offset": _last_update_id + 1, "timeout": 30}
+            resp = requests.get(url, params=params, timeout=35)
+            if resp.status_code != 200:
+                continue
+            updates = resp.json().get("result", [])
+            for update in updates:
+                _last_update_id = update["update_id"]
+                msg = update.get("message", {})
+                text = msg.get("text", "")
+                if text.startswith("/status"):
+                    handle_status_command(open_trades)
+                elif text.startswith("/help"):
+                    send_message(
+                        "🤖 <b>Comandos disponibles:</b>\n"
+                        "/status — Ver posiciones abiertas y P&L\n"
+                        "/help — Ver esta ayuda"
+                    )
+        except Exception as e:
+            logger.error(f"Error en poll_commands: {e}")
+            import time
+            time.sleep(10)
+
+
+def start_command_listener(open_trades: dict):
+    """Inicia el listener de comandos en un hilo separado."""
+    t = threading.Thread(target=poll_commands, args=(open_trades,), daemon=True)
+    t.start()
+    logger.info("✅ Listener de comandos Telegram iniciado")
 
 
 def notify_trade_open(symbol: str, side: str, entry: float, stop: float, tp: float, size: float):
@@ -94,8 +190,9 @@ def notify_daily_summary(trades: int, pnl: float, open_pos: int):
     msg = (
         f"📊 <b>RESUMEN DIARIO</b>\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"Trades hoy:       <b>{trades}</b>\n"
-        f"P&L del día:      {emoji} <b>${pnl:+.2f} USDT</b>\n"
-        f"Posiciones abiertas: <b>{open_pos}</b>"
+        f"Trades hoy:          <b>{trades}</b>\n"
+        f"P&L del día:         {emoji} <b>${pnl:+.2f} USDT</b>\n"
+        f"Posiciones abiertas: <b>{open_pos}</b>\n\n"
+        f"<i>Usá /status para ver el detalle.</i>"
     )
     send_message(msg)

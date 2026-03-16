@@ -1,4 +1,3 @@
-config/settings.py
 logs/
 venv/
 __pycache__/

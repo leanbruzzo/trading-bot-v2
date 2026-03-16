@@ -6,6 +6,7 @@ import time
 import logging
 import pandas as pd
 from datetime import datetime
+import os
 
 from config.settings import (
     SYMBOLS, BOT_INTERVAL_SECONDS, SENTIMENT_WEIGHT, TECHNICAL_WEIGHT,
@@ -17,7 +18,8 @@ from modules.sentiment_analyzer import get_combined_sentiment
 from modules.risk_manager       import (
     load_risk_state, save_risk_state, can_trade, calculate_position_size,
     calculate_stop_loss, calculate_take_profit, calculate_partial_tp,
-    update_trailing_stop, register_pnl, is_flash_crash
+    update_trailing_stop, register_pnl, is_flash_crash,
+    load_open_trades, save_open_trades
 )
 from modules.order_executor import (
     setup_symbol, get_balance, get_klines, get_current_price,
@@ -25,11 +27,11 @@ from modules.order_executor import (
 )
 from modules.notifier import (
     notify_trade_open, notify_trade_close, notify_risk_alert,
-    notify_bot_stopped, notify_flash_crash, notify_daily_summary, send_message
+    notify_bot_stopped, notify_flash_crash, notify_daily_summary,
+    send_message, start_command_listener
 )
 
 # ── Logging ───────────────────────────────────────────────────────────────────
-import os
 os.makedirs("logs", exist_ok=True)
 
 logging.basicConfig(
@@ -42,15 +44,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("bot.main")
 
-# ── Estado en memoria ─────────────────────────────────────────────────────────
-# {
-#   "BTCUSDT": {
-#     "side": "LONG", "qty": 0.001, "entry": 60000,
-#     "stop": 58800, "tp": 62400, "partial_tp": 61800,
-#     "partial_done": False, "signal_score": 0.6
-#   }
-# }
-open_trades: dict = {}
+# ── Estado — cargado desde disco al iniciar ───────────────────────────────────
+open_trades: dict = load_open_trades()
 
 
 def klines_to_df(candles: list) -> pd.DataFrame:
@@ -58,9 +53,6 @@ def klines_to_df(candles: list) -> pd.DataFrame:
 
 
 def decide_action(symbol: str, df: pd.DataFrame, current_price: float) -> tuple[str, float]:
-    """
-    Retorna (acción, score): LONG | SHORT | FLAT y el score combinado.
-    """
     regime_data    = detect_regime(df)
     technical_data = calculate_signals(df)
     sentiment_data = get_combined_sentiment(symbol)
@@ -102,7 +94,6 @@ def decide_action(symbol: str, df: pd.DataFrame, current_price: float) -> tuple[
 
 
 def manage_open_trade(symbol: str, current_price: float, df: pd.DataFrame):
-    """Gestiona una posición abierta con partial TP y free ride."""
     trade = open_trades[symbol]
     side  = trade["side"]
 
@@ -123,31 +114,26 @@ def manage_open_trade(symbol: str, current_price: float, df: pd.DataFrame):
                     pnl, f"Take Profit parcial 50% (+{PARTIAL_TP_PCT*100:.0f}%)"
                 )
                 logger.info(f"✅ Partial TP {symbol} — P&L parcial: ${pnl:+.2f}")
-
-                # Mover stop al breakeven y marcar partial como hecho
                 open_trades[symbol]["partial_done"] = True
-                open_trades[symbol]["stop"]         = trade["entry"]  # breakeven
+                open_trades[symbol]["stop"]         = trade["entry"]
                 open_trades[symbol]["qty"]          = round(trade["qty"] - partial_qty, 4)
+                save_open_trades(open_trades)
                 logger.info(f"🔒 Stop movido a breakeven: ${trade['entry']}")
             return
 
-    # ── Trailing stop en el 50% restante ─────────────────────────────────────
+    # ── Trailing stop ─────────────────────────────────────────────────────────
     new_stop = update_trailing_stop(current_price, trade["stop"], side)
     open_trades[symbol]["stop"] = new_stop
 
-    # ── Verificar stop-loss ───────────────────────────────────────────────────
+    # ── Verificaciones de cierre ──────────────────────────────────────────────
     hit_stop = (
         (side == "LONG"  and current_price <= new_stop) or
         (side == "SHORT" and current_price >= new_stop)
     )
-
-    # ── Verificar take-profit final ───────────────────────────────────────────
     hit_tp = (
         (side == "LONG"  and current_price >= trade["tp"]) or
         (side == "SHORT" and current_price <= trade["tp"])
     )
-
-    # ── Verificar reversión de señal ──────────────────────────────────────────
     new_signal, new_score = decide_action(symbol, df, current_price)
     signal_reversed = (
         (side == "LONG"  and new_signal == "SHORT") or
@@ -172,14 +158,17 @@ def manage_open_trade(symbol: str, current_price: float, df: pd.DataFrame):
             notify_trade_close(symbol, side, trade["entry"], current_price, pnl, reason)
             logger.info(f"Posición cerrada {symbol} | P&L: ${pnl:+.2f} | {reason}")
             del open_trades[symbol]
+            save_open_trades(open_trades)
 
-            # Si la señal se invirtió, abrir en nueva dirección
+            state = load_risk_state()
+            state["open_positions"] = len(open_trades)
+            save_risk_state(state)
+
             if signal_reversed:
                 open_new_trade(symbol, new_signal, current_price, new_score, df)
 
 
 def open_new_trade(symbol: str, direction: str, current_price: float, score: float, df: pd.DataFrame):
-    """Abre un nuevo trade con position sizing dinámico."""
     state = load_risk_state()
     ok, reason = can_trade(state)
     if not ok:
@@ -187,11 +176,11 @@ def open_new_trade(symbol: str, direction: str, current_price: float, score: flo
         notify_risk_alert(reason)
         return
 
-    balance     = get_balance()
-    size        = calculate_position_size(balance, score)
-    stop        = calculate_stop_loss(current_price, direction)
-    tp          = calculate_take_profit(current_price, direction)
-    partial_tp  = calculate_partial_tp(current_price, direction)
+    balance    = get_balance()
+    size       = calculate_position_size(balance, score)
+    stop       = calculate_stop_loss(current_price, direction)
+    tp         = calculate_take_profit(current_price, direction)
+    partial_tp = calculate_partial_tp(current_price, direction)
 
     if direction == "LONG":
         result = open_long(symbol, size)
@@ -208,7 +197,10 @@ def open_new_trade(symbol: str, direction: str, current_price: float, score: flo
             "partial_tp":   partial_tp,
             "partial_done": False,
             "signal_score": score,
+            "opened_at":    datetime.now().isoformat(),
         }
+        save_open_trades(open_trades)
+
         state["open_positions"] = len(open_trades)
         save_risk_state(state)
 
@@ -233,15 +225,24 @@ def emergency_close_all(reason: str):
             register_pnl(pnl)
             notify_trade_close(symbol, trade["side"], trade["entry"], price, pnl, reason)
             del open_trades[symbol]
+    save_open_trades(open_trades)
     notify_bot_stopped(reason)
 
 
 def run():
     logger.info("🚀 Trading Bot iniciado")
-    send_message("🚀 <b>Trading Bot iniciado</b>\nMonitoreando: " + ", ".join(SYMBOLS))
+    loaded = len(open_trades)
+    send_message(
+        f"🚀 <b>Trading Bot iniciado</b>\n"
+        f"Monitoreando: {', '.join(SYMBOLS)}\n"
+        f"📂 Posiciones recuperadas del disco: <b>{loaded}</b>"
+    )
 
     for symbol in SYMBOLS:
         setup_symbol(symbol)
+
+    # Iniciar listener de comandos Telegram
+    start_command_listener(open_trades)
 
     daily_trade_count = 0
     last_summary_date = datetime.now().date()
@@ -263,17 +264,13 @@ def run():
                 df            = klines_to_df(candles)
                 current_price = get_current_price(symbol)
 
-                # Flash crash check
                 if is_flash_crash(candles, current_price):
                     notify_flash_crash(symbol, current_price, 10.0)
                     emergency_close_all(f"Flash crash detectado en {symbol}")
                     break
 
-                # Gestión de posición abierta
                 if symbol in open_trades:
                     manage_open_trade(symbol, current_price, df)
-
-                # Buscar nueva entrada
                 else:
                     state = load_risk_state()
                     ok, block_reason = can_trade(state)

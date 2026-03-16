@@ -13,11 +13,11 @@ from config.settings import (
     POSITION_SIZE_LOW, POSITION_SIZE_MID, POSITION_SIZE_HIGH
 )
 
-RISK_STATE_FILE = "logs/risk_state.json"
+RISK_STATE_FILE  = "logs/risk_state.json"
+TRADES_STATE_FILE = "logs/open_trades.json"
 
 
 def load_risk_state() -> dict:
-    import os
     if os.getenv("RESET_STATE", "False") == "True":
         state = {
             "daily_pnl":      0.0,
@@ -43,10 +43,31 @@ def load_risk_state() -> dict:
         "open_positions": 0,
     }
 
+
 def save_risk_state(state: dict):
     os.makedirs("logs", exist_ok=True)
     with open(RISK_STATE_FILE, "w") as f:
         json.dump(state, f, indent=2)
+
+
+# ── Persistencia de posiciones abiertas ───────────────────────────────────────
+
+def load_open_trades() -> dict:
+    """Carga las posiciones abiertas desde disco."""
+    if os.getenv("RESET_STATE", "False") == "True":
+        save_open_trades({})
+        return {}
+    if os.path.exists(TRADES_STATE_FILE):
+        with open(TRADES_STATE_FILE) as f:
+            return json.load(f)
+    return {}
+
+
+def save_open_trades(trades: dict):
+    """Guarda las posiciones abiertas en disco."""
+    os.makedirs("logs", exist_ok=True)
+    with open(TRADES_STATE_FILE, "w") as f:
+        json.dump(trades, f, indent=2)
 
 
 def reset_if_needed(state: dict) -> dict:
@@ -89,17 +110,14 @@ def can_trade(state: dict) -> tuple[bool, str]:
 
 
 def calculate_position_size(available_capital: float, signal_score: float) -> float:
-    """Calcula tamaño de posición dinámico según fuerza de la señal."""
     usable = available_capital * (1 - CASH_RESERVE_PCT)
     score  = abs(signal_score)
-
     if score > 0.70:
         pct = POSITION_SIZE_HIGH
     elif score > 0.50:
         pct = POSITION_SIZE_MID
     else:
         pct = POSITION_SIZE_LOW
-
     return round(usable * pct, 2)
 
 
@@ -118,7 +136,6 @@ def calculate_take_profit(entry_price: float, side: str) -> float:
 
 
 def calculate_partial_tp(entry_price: float, side: str) -> float:
-    """Calcula el precio del take profit parcial (3%)."""
     if side == "LONG":
         return round(entry_price * (1 + PARTIAL_TP_PCT), 4)
     else:
