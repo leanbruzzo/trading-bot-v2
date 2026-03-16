@@ -5,8 +5,9 @@ Coordina todos los módulos y ejecuta el loop principal.
 import time
 import logging
 import pandas as pd
-from datetime import datetime
+import json
 import os
+from datetime import datetime
 
 from config.settings import (
     SYMBOLS, BOT_INTERVAL_SECONDS, SENTIMENT_WEIGHT, TECHNICAL_WEIGHT,
@@ -47,12 +48,34 @@ logger = logging.getLogger("bot.main")
 # ── Estado — cargado desde disco al iniciar ───────────────────────────────────
 open_trades: dict = load_open_trades()
 
+TRADE_HISTORY_FILE = "logs/trade_history.json"
+
+
+# ── Historial de trades ───────────────────────────────────────────────────────
+
+def load_trade_history() -> list:
+    if os.path.exists(TRADE_HISTORY_FILE):
+        with open(TRADE_HISTORY_FILE) as f:
+            return json.load(f)
+    return []
+
+
+def save_trade_to_history(record: dict):
+    history = load_trade_history()
+    history.append(record)
+    with open(TRADE_HISTORY_FILE, "w") as f:
+        json.dump(history, f, indent=2)
+    logger.info(f"📝 Trade guardado en historial: {record['symbol']} {record['side']} P&L=${record['pnl']:+.2f}")
+
 
 def klines_to_df(candles: list) -> pd.DataFrame:
     return pd.DataFrame(candles, columns=["open", "high", "low", "close", "volume"])
 
 
-def decide_action(symbol: str, df: pd.DataFrame, current_price: float) -> tuple[str, float]:
+def decide_action(symbol: str, df: pd.DataFrame, current_price: float) -> tuple[str, float, dict]:
+    """
+    Retorna (acción, score, análisis_completo).
+    """
     regime_data    = detect_regime(df)
     technical_data = calculate_signals(df)
     sentiment_data = get_combined_sentiment(symbol)
@@ -79,6 +102,24 @@ def decide_action(symbol: str, df: pd.DataFrame, current_price: float) -> tuple[
     if regime == "VOLATILE":
         combined *= 0.5
 
+    analysis = {
+        "regime":         regime,
+        "regime_score":   round(regime_score, 2),
+        "technical_score": t_score,
+        "sentiment_score": round(s_score, 3),
+        "combined_score":  round(combined, 3),
+        "rsi":             technical_data["rsi"],
+        "ma_signal":       technical_data["ma_signal"],
+        "ma_short":        technical_data["ma_short"],
+        "ma_long":         technical_data["ma_long"],
+        "momentum":        technical_data["momentum"],
+        "mom_signal":      technical_data["mom_signal"],
+        "rsi_signal":      technical_data["rsi_signal"],
+        "volume_confirm":  technical_data["volume_confirm"],
+        "adx":             regime_data.get("adx", None),
+        "atr":             regime_data.get("atr", None),
+    }
+
     logger.info(
         f"{symbol} | régimen={regime} | técnico={t_score:.2f} | "
         f"sentiment={s_score:.2f} | combined={combined:.2f} | "
@@ -86,11 +127,11 @@ def decide_action(symbol: str, df: pd.DataFrame, current_price: float) -> tuple[
     )
 
     if combined >= 0.35:
-        return "LONG", combined
+        return "LONG", combined, analysis
     elif combined <= -0.35:
-        return "SHORT", combined
+        return "SHORT", combined, analysis
     else:
-        return "FLAT", combined
+        return "FLAT", combined, analysis
 
 
 def manage_open_trade(symbol: str, current_price: float, df: pd.DataFrame):
@@ -134,7 +175,7 @@ def manage_open_trade(symbol: str, current_price: float, df: pd.DataFrame):
         (side == "LONG"  and current_price >= trade["tp"]) or
         (side == "SHORT" and current_price <= trade["tp"])
     )
-    new_signal, new_score = decide_action(symbol, df, current_price)
+    new_signal, new_score, new_analysis = decide_action(symbol, df, current_price)
     signal_reversed = (
         (side == "LONG"  and new_signal == "SHORT") or
         (side == "SHORT" and new_signal == "LONG")
@@ -157,6 +198,28 @@ def manage_open_trade(symbol: str, current_price: float, df: pd.DataFrame):
             register_pnl(pnl)
             notify_trade_close(symbol, side, trade["entry"], current_price, pnl, reason)
             logger.info(f"Posición cerrada {symbol} | P&L: ${pnl:+.2f} | {reason}")
+
+            # ── Guardar en historial completo ─────────────────────────────────
+            opened_at = trade.get("opened_at", datetime.now().isoformat())
+            closed_at = datetime.now().isoformat()
+            duration  = (datetime.fromisoformat(closed_at) - datetime.fromisoformat(opened_at)).total_seconds() / 3600
+
+            save_trade_to_history({
+                "symbol":        symbol,
+                "side":          side,
+                "entry_price":   trade["entry"],
+                "exit_price":    current_price,
+                "qty":           trade["qty"],
+                "pnl":           round(pnl, 4),
+                "reason_close":  reason,
+                "partial_tp_taken": trade.get("partial_done", False),
+                "opened_at":     opened_at,
+                "closed_at":     closed_at,
+                "duration_hours": round(duration, 2),
+                "analysis_open": trade.get("analysis_open", {}),
+                "analysis_close": new_analysis,
+            })
+
             del open_trades[symbol]
             save_open_trades(open_trades)
 
@@ -165,16 +228,20 @@ def manage_open_trade(symbol: str, current_price: float, df: pd.DataFrame):
             save_risk_state(state)
 
             if signal_reversed:
-                open_new_trade(symbol, new_signal, current_price, new_score, df)
+                open_new_trade(symbol, new_signal, current_price, new_score, df, new_analysis)
 
 
-def open_new_trade(symbol: str, direction: str, current_price: float, score: float, df: pd.DataFrame):
+def open_new_trade(symbol: str, direction: str, current_price: float, score: float,
+                   df: pd.DataFrame, analysis: dict = None):
     state = load_risk_state()
     ok, reason = can_trade(state)
     if not ok:
         logger.warning(f"Trade bloqueado: {reason}")
         notify_risk_alert(reason)
         return
+
+    if analysis is None:
+        _, _, analysis = decide_action(symbol, df, current_price)
 
     balance    = get_balance()
     size       = calculate_position_size(balance, score)
@@ -189,15 +256,16 @@ def open_new_trade(symbol: str, direction: str, current_price: float, score: flo
 
     if result:
         open_trades[symbol] = {
-            "side":         direction,
-            "qty":          result["qty"],
-            "entry":        result["entry_price"],
-            "stop":         stop,
-            "tp":           tp,
-            "partial_tp":   partial_tp,
-            "partial_done": False,
-            "signal_score": score,
-            "opened_at":    datetime.now().isoformat(),
+            "side":          direction,
+            "qty":           result["qty"],
+            "entry":         result["entry_price"],
+            "stop":          stop,
+            "tp":            tp,
+            "partial_tp":    partial_tp,
+            "partial_done":  False,
+            "signal_score":  score,
+            "opened_at":     datetime.now().isoformat(),
+            "analysis_open": analysis,
         }
         save_open_trades(open_trades)
 
@@ -224,6 +292,27 @@ def emergency_close_all(reason: str):
                 pnl = -pnl
             register_pnl(pnl)
             notify_trade_close(symbol, trade["side"], trade["entry"], price, pnl, reason)
+
+            opened_at = trade.get("opened_at", datetime.now().isoformat())
+            closed_at = datetime.now().isoformat()
+            duration  = (datetime.fromisoformat(closed_at) - datetime.fromisoformat(opened_at)).total_seconds() / 3600
+
+            save_trade_to_history({
+                "symbol":        symbol,
+                "side":          trade["side"],
+                "entry_price":   trade["entry"],
+                "exit_price":    price,
+                "qty":           trade["qty"],
+                "pnl":           round(pnl, 4),
+                "reason_close":  reason,
+                "partial_tp_taken": trade.get("partial_done", False),
+                "opened_at":     opened_at,
+                "closed_at":     closed_at,
+                "duration_hours": round(duration, 2),
+                "analysis_open": trade.get("analysis_open", {}),
+                "analysis_close": {},
+            })
+
             del open_trades[symbol]
     save_open_trades(open_trades)
     notify_bot_stopped(reason)
@@ -241,7 +330,6 @@ def run():
     for symbol in SYMBOLS:
         setup_symbol(symbol)
 
-    # Iniciar listener de comandos Telegram
     start_command_listener(open_trades)
 
     daily_trade_count = 0
@@ -278,9 +366,9 @@ def run():
                         logger.info(f"Sin operar {symbol}: {block_reason}")
                         continue
 
-                    direction, score = decide_action(symbol, df, current_price)
+                    direction, score, analysis = decide_action(symbol, df, current_price)
                     if direction != "FLAT":
-                        open_new_trade(symbol, direction, current_price, score, df)
+                        open_new_trade(symbol, direction, current_price, score, df, analysis)
                         daily_trade_count += 1
 
             time.sleep(BOT_INTERVAL_SECONDS)
