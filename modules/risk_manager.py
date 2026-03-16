@@ -17,6 +17,19 @@ RISK_STATE_FILE = "logs/risk_state.json"
 
 
 def load_risk_state() -> dict:
+    import os
+    if os.getenv("RESET_STATE", "False") == "True":
+        state = {
+            "daily_pnl":      0.0,
+            "weekly_pnl":     0.0,
+            "monthly_pnl":    0.0,
+            "paused_until":   None,
+            "bot_stopped":    False,
+            "last_reset":     str(date.today()),
+            "open_positions": 0,
+        }
+        save_risk_state(state)
+        return state
     if os.path.exists(RISK_STATE_FILE):
         with open(RISK_STATE_FILE) as f:
             return json.load(f)
@@ -29,7 +42,6 @@ def load_risk_state() -> dict:
         "last_reset":     str(date.today()),
         "open_positions": 0,
     }
-
 
 def save_risk_state(state: dict):
     os.makedirs("logs", exist_ok=True)
