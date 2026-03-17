@@ -68,7 +68,7 @@ def calculate_signals(df: pd.DataFrame) -> dict:
     # --- Volumen como confirmador ---
     vol_avg = df["volume"].rolling(20).mean().iloc[-1]
     vol_now = df["volume"].iloc[-1]
-    volume_confirm = vol_now > vol_avg * 1.2  # volumen 20% por encima del promedio
+    volume_confirm = bool(vol_now > vol_avg * 1.2) # volumen 20% por encima del promedio
 
     # --- Score técnico combinado ---
     raw_score = (ma_signal * 0.4) + (rsi_signal * 0.35) + (mom_signal * 0.25)
