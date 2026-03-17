@@ -11,7 +11,8 @@ from datetime import datetime
 
 from config.settings import (
     SYMBOLS, BOT_INTERVAL_SECONDS, SENTIMENT_WEIGHT, TECHNICAL_WEIGHT,
-    REGIME_WEIGHT, PARTIAL_TP_PCT, PARTIAL_TP_SIZE
+    REGIME_WEIGHT, PARTIAL_TP_PCT, PARTIAL_TP_SIZE,
+    SIGNAL_THRESHOLD, SIGNAL_REVERSAL_COOLDOWN
 )
 from modules.regime_detector    import detect_regime
 from modules.signal_generator   import calculate_signals
@@ -45,13 +46,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger("bot.main")
 
-# ── Estado — cargado desde disco al iniciar ───────────────────────────────────
+# ── Estado ────────────────────────────────────────────────────────────────────
 open_trades: dict = load_open_trades()
 
 TRADE_HISTORY_FILE = "logs/trade_history.json"
 
+# ── Cooldown de señales invertidas ────────────────────────────────────────────
+# { "BTCUSDT": datetime_del_ultimo_cierre_por_inversion }
+reversal_cooldown: dict = {}
 
-# ── Historial de trades ───────────────────────────────────────────────────────
+
+# ── Historial ─────────────────────────────────────────────────────────────────
 
 def load_trade_history() -> list:
     if os.path.exists(TRADE_HISTORY_FILE):
@@ -65,7 +70,7 @@ def save_trade_to_history(record: dict):
     history.append(record)
     with open(TRADE_HISTORY_FILE, "w") as f:
         json.dump(history, f, indent=2)
-    logger.info(f"📝 Trade guardado en historial: {record['symbol']} {record['side']} P&L=${record['pnl']:+.2f}")
+    logger.info(f"📝 Trade guardado: {record['symbol']} {record['side']} P&L=${record['pnl']:+.2f}")
 
 
 def klines_to_df(candles: list) -> pd.DataFrame:
@@ -73,9 +78,6 @@ def klines_to_df(candles: list) -> pd.DataFrame:
 
 
 def decide_action(symbol: str, df: pd.DataFrame, current_price: float) -> tuple[str, float, dict]:
-    """
-    Retorna (acción, score, análisis_completo).
-    """
     regime_data    = detect_regime(df)
     technical_data = calculate_signals(df)
     sentiment_data = get_combined_sentiment(symbol)
@@ -103,8 +105,8 @@ def decide_action(symbol: str, df: pd.DataFrame, current_price: float) -> tuple[
         combined *= 0.5
 
     analysis = {
-        "regime":         regime,
-        "regime_score":   round(regime_score, 2),
+        "regime":          regime,
+        "regime_score":    round(regime_score, 2),
         "technical_score": t_score,
         "sentiment_score": round(s_score, 3),
         "combined_score":  round(combined, 3),
@@ -126,19 +128,32 @@ def decide_action(symbol: str, df: pd.DataFrame, current_price: float) -> tuple[
         f"RSI={technical_data['rsi']:.1f} | vol_confirm={technical_data['volume_confirm']}"
     )
 
-    if combined >= 0.35:
+    if combined >= SIGNAL_THRESHOLD:
         return "LONG", combined, analysis
-    elif combined <= -0.35:
+    elif combined <= -SIGNAL_THRESHOLD:
         return "SHORT", combined, analysis
     else:
         return "FLAT", combined, analysis
+
+
+def is_in_cooldown(symbol: str) -> bool:
+    """Verifica si el símbolo está en cooldown tras una señal invertida."""
+    if symbol not in reversal_cooldown:
+        return False
+    elapsed = (datetime.now() - reversal_cooldown[symbol]).total_seconds() / 60
+    if elapsed < SIGNAL_REVERSAL_COOLDOWN:
+        remaining = int(SIGNAL_REVERSAL_COOLDOWN - elapsed)
+        logger.info(f"⏳ {symbol} en cooldown — {remaining} min restantes")
+        return True
+    del reversal_cooldown[symbol]
+    return False
 
 
 def manage_open_trade(symbol: str, current_price: float, df: pd.DataFrame):
     trade = open_trades[symbol]
     side  = trade["side"]
 
-    # ── Partial Take Profit (primer 50%) ─────────────────────────────────────
+    # ── Partial Take Profit ───────────────────────────────────────────────────
     if not trade["partial_done"]:
         hit_partial = (
             (side == "LONG"  and current_price >= trade["partial_tp"]) or
@@ -199,26 +214,30 @@ def manage_open_trade(symbol: str, current_price: float, df: pd.DataFrame):
             notify_trade_close(symbol, side, trade["entry"], current_price, pnl, reason)
             logger.info(f"Posición cerrada {symbol} | P&L: ${pnl:+.2f} | {reason}")
 
-            # ── Guardar en historial completo ─────────────────────────────────
             opened_at = trade.get("opened_at", datetime.now().isoformat())
             closed_at = datetime.now().isoformat()
             duration  = (datetime.fromisoformat(closed_at) - datetime.fromisoformat(opened_at)).total_seconds() / 3600
 
             save_trade_to_history({
-                "symbol":        symbol,
-                "side":          side,
-                "entry_price":   trade["entry"],
-                "exit_price":    current_price,
-                "qty":           trade["qty"],
-                "pnl":           round(pnl, 4),
-                "reason_close":  reason,
+                "symbol":           symbol,
+                "side":             side,
+                "entry_price":      trade["entry"],
+                "exit_price":       current_price,
+                "qty":              trade["qty"],
+                "pnl":              round(pnl, 4),
+                "reason_close":     reason,
                 "partial_tp_taken": trade.get("partial_done", False),
-                "opened_at":     opened_at,
-                "closed_at":     closed_at,
-                "duration_hours": round(duration, 2),
-                "analysis_open": trade.get("analysis_open", {}),
-                "analysis_close": new_analysis,
+                "opened_at":        opened_at,
+                "closed_at":        closed_at,
+                "duration_hours":   round(duration, 2),
+                "analysis_open":    trade.get("analysis_open", {}),
+                "analysis_close":   new_analysis,
             })
+
+            # Si fue señal invertida → activar cooldown
+            if signal_reversed:
+                reversal_cooldown[symbol] = datetime.now()
+                logger.info(f"⏳ Cooldown activado para {symbol} — {SIGNAL_REVERSAL_COOLDOWN} min")
 
             del open_trades[symbol]
             save_open_trades(open_trades)
@@ -227,12 +246,17 @@ def manage_open_trade(symbol: str, current_price: float, df: pd.DataFrame):
             state["open_positions"] = len(open_trades)
             save_risk_state(state)
 
-            if signal_reversed:
+            # Abrir en nueva dirección solo si NO está en cooldown
+            if signal_reversed and not is_in_cooldown(symbol):
                 open_new_trade(symbol, new_signal, current_price, new_score, df, new_analysis)
 
 
 def open_new_trade(symbol: str, direction: str, current_price: float, score: float,
                    df: pd.DataFrame, analysis: dict = None):
+    # Verificar cooldown
+    if is_in_cooldown(symbol):
+        return
+
     state = load_risk_state()
     ok, reason = can_trade(state)
     if not ok:
@@ -276,7 +300,7 @@ def open_new_trade(symbol: str, direction: str, current_price: float, score: flo
         notify_trade_open(symbol, direction, result["entry_price"], stop, tp, size)
         send_message(
             f"📐 <b>Tamaño de posición:</b> {size_label} (score={score:.2f})\n"
-            f"🎯 <b>Partial TP al 3%:</b> ${partial_tp:,.2f}\n"
+            f"🎯 <b>Partial TP al 4.5%:</b> ${partial_tp:,.2f}\n"
             f"🔒 <b>Stop post-partial:</b> Breakeven (${result['entry_price']:,.2f})"
         )
 
@@ -298,33 +322,34 @@ def emergency_close_all(reason: str):
             duration  = (datetime.fromisoformat(closed_at) - datetime.fromisoformat(opened_at)).total_seconds() / 3600
 
             save_trade_to_history({
-                "symbol":        symbol,
-                "side":          trade["side"],
-                "entry_price":   trade["entry"],
-                "exit_price":    price,
-                "qty":           trade["qty"],
-                "pnl":           round(pnl, 4),
-                "reason_close":  reason,
+                "symbol":           symbol,
+                "side":             trade["side"],
+                "entry_price":      trade["entry"],
+                "exit_price":       price,
+                "qty":              trade["qty"],
+                "pnl":              round(pnl, 4),
+                "reason_close":     reason,
                 "partial_tp_taken": trade.get("partial_done", False),
-                "opened_at":     opened_at,
-                "closed_at":     closed_at,
-                "duration_hours": round(duration, 2),
-                "analysis_open": trade.get("analysis_open", {}),
-                "analysis_close": {},
+                "opened_at":        opened_at,
+                "closed_at":        closed_at,
+                "duration_hours":   round(duration, 2),
+                "analysis_open":    trade.get("analysis_open", {}),
+                "analysis_close":   {},
             })
-
             del open_trades[symbol]
     save_open_trades(open_trades)
     notify_bot_stopped(reason)
 
 
 def run():
-    logger.info("🚀 Trading Bot iniciado")
+    logger.info("🚀 Trading Bot iniciado — v2.0 (cooldown + señales mejoradas)")
     loaded = len(open_trades)
     send_message(
-        f"🚀 <b>Trading Bot iniciado</b>\n"
+        f"🚀 <b>Trading Bot iniciado v2.0</b>\n"
         f"Monitoreando: {', '.join(SYMBOLS)}\n"
-        f"📂 Posiciones recuperadas del disco: <b>{loaded}</b>"
+        f"📐 Umbral señal: {SIGNAL_THRESHOLD} | Stop: 3.5% | TP: 7%\n"
+        f"⏳ Cooldown inversión: {SIGNAL_REVERSAL_COOLDOWN} min\n"
+        f"📂 Posiciones recuperadas: <b>{loaded}</b>"
     )
 
     for symbol in SYMBOLS:
@@ -360,6 +385,10 @@ def run():
                 if symbol in open_trades:
                     manage_open_trade(symbol, current_price, df)
                 else:
+                    # Verificar cooldown antes de buscar entrada
+                    if is_in_cooldown(symbol):
+                        continue
+
                     state = load_risk_state()
                     ok, block_reason = can_trade(state)
                     if not ok:

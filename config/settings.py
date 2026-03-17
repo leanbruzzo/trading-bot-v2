@@ -1,7 +1,5 @@
 # ============================================================
 #  TRADING BOT — CONFIGURACIÓN CENTRAL
-#  Lee las keys desde variables de entorno (Railway)
-#  o desde el archivo directamente (local)
 # ============================================================
 import os
 
@@ -21,11 +19,11 @@ SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
 # --- GESTIÓN DE RIESGO ---
 CAPITAL_TOTAL_USDT      = float(os.getenv("CAPITAL_TOTAL_USDT", "500"))
 MAX_POSITION_PCT        = 0.10
-STOP_LOSS_PCT           = 0.02
-TAKE_PROFIT_PCT         = 0.04
-PARTIAL_TP_PCT          = 0.03
+STOP_LOSS_PCT           = 0.035       # ⬆ era 0.02 → más espacio para respirar
+TAKE_PROFIT_PCT         = 0.07        # ⬆ era 0.04 → mantiene ratio 1:2
+PARTIAL_TP_PCT          = 0.045       # ⬆ era 0.03 → proporcional al nuevo TP
 PARTIAL_TP_SIZE         = 0.50
-TRAILING_STOP_PCT       = 0.015
+TRAILING_STOP_PCT       = 0.02        # ⬆ era 0.015 → proporcional
 MAX_LOSS_DAILY_PCT      = 0.04
 MAX_LOSS_WEEKLY_PCT     = 0.06
 MAX_LOSS_MONTHLY_PCT    = 0.08
@@ -37,6 +35,10 @@ CASH_RESERVE_PCT        = 0.30
 POSITION_SIZE_LOW       = 0.05
 POSITION_SIZE_MID       = 0.10
 POSITION_SIZE_HIGH      = 0.15
+
+# --- UMBRALES DE SEÑAL ---
+SIGNAL_THRESHOLD        = 0.45        # ⬆ era 0.35 → filtra señales débiles
+SIGNAL_REVERSAL_COOLDOWN = 20         # ✨ nuevo → minutos de espera tras señal invertida
 
 # --- PARÁMETROS TÉCNICOS ---
 TIMEFRAME               = "15m"
@@ -55,6 +57,7 @@ TECHNICAL_WEIGHT        = 0.55
 REGIME_WEIGHT           = 0.35
 SENTIMENT_MIN_SOURCES   = 2
 NEWSAPI_KEY             = os.getenv("NEWSAPI_KEY", "TU_NEWSAPI_KEY")
+SENTIMENT_CACHE_MINUTES = 60          # ✨ nuevo → cachea el F&G por 60 min
 
 # --- LOOP PRINCIPAL ---
 BOT_INTERVAL_SECONDS    = 60

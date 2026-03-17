@@ -1,13 +1,22 @@
 """
 MÓDULO 3: Sentiment Analyzer
-Analiza noticias y Fear & Greed Index para obtener un score de sentimiento.
+Analiza Fear & Greed Index con caché para no llamar la API cada minuto.
 Score: -1 (muy negativo) a +1 (muy positivo)
 """
 import requests
-import time
+import logging
 from datetime import datetime, timedelta
-from config.settings import NEWSAPI_KEY, SENTIMENT_MIN_SOURCES
+from config.settings import NEWSAPI_KEY, SENTIMENT_MIN_SOURCES, SENTIMENT_CACHE_MINUTES
 
+logger = logging.getLogger("bot.sentiment")
+
+# ── Caché del Fear & Greed Index ──────────────────────────────────────────────
+_fg_cache = {
+    "score":      0.0,
+    "label":      "Unknown",
+    "value":      50,
+    "expires_at": datetime.min,
+}
 
 CRYPTO_KEYWORDS = {
     "BTCUSDT": ["bitcoin", "BTC", "bitcoin price", "bitcoin market"],
@@ -28,23 +37,40 @@ NEGATIVE_WORDS = [
 
 
 def get_fear_greed_index() -> dict:
-    """Obtiene el Fear & Greed Index de cripto (API pública, sin key)."""
+    """Obtiene el Fear & Greed Index con caché de 60 minutos."""
+    global _fg_cache
+
+    # Devolver caché si todavía es válido
+    if datetime.now() < _fg_cache["expires_at"]:
+        logger.debug(f"F&G desde caché: {_fg_cache['value']} ({_fg_cache['label']})")
+        return _fg_cache
+
     try:
-        resp = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10)
-        data = resp.json()["data"][0]
+        resp  = requests.get("https://api.alternative.me/fng/?limit=1", timeout=10)
+        data  = resp.json()["data"][0]
         value = int(data["value"])
-        # Normalizar a -1 / +1
-        score = (value - 50) / 50   # 0=neutral, 100=+1, 0=-1
-        return {"score": round(score, 2), "label": data["value_classification"], "value": value}
+        score = round((value - 50) / 50, 2)
+
+        _fg_cache = {
+            "score":      score,
+            "label":      data["value_classification"],
+            "value":      value,
+            "expires_at": datetime.now() + timedelta(minutes=SENTIMENT_CACHE_MINUTES),
+        }
+        logger.info(f"F&G actualizado: {value} ({data['value_classification']}) → score={score}")
+        return _fg_cache
+
     except Exception as e:
-        return {"score": 0.0, "label": "Unknown", "value": 50, "error": str(e)}
+        logger.error(f"Error obteniendo F&G: {e}")
+        # Si falla, devolver caché viejo o neutro
+        return _fg_cache
 
 
 def analyze_text_sentiment(text: str) -> float:
     """Análisis simple de sentimiento por palabras clave."""
     text_lower = text.lower()
-    pos = sum(1 for w in POSITIVE_WORDS if w in text_lower)
-    neg = sum(1 for w in NEGATIVE_WORDS if w in text_lower)
+    pos   = sum(1 for w in POSITIVE_WORDS if w in text_lower)
+    neg   = sum(1 for w in NEGATIVE_WORDS if w in text_lower)
     total = pos + neg
     if total == 0:
         return 0.0
@@ -61,7 +87,7 @@ def get_news_sentiment(symbol: str) -> dict:
     since    = (datetime.utcnow() - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%S")
 
     try:
-        url = "https://newsapi.org/v2/everything"
+        url    = "https://newsapi.org/v2/everything"
         params = {
             "q":        query,
             "from":     since,
@@ -95,8 +121,7 @@ def get_combined_sentiment(symbol: str) -> dict:
     fg   = get_fear_greed_index()
     news = get_news_sentiment(symbol)
 
-    # Si las noticias están disponibles, peso 50/50. Si no, solo Fear & Greed.
-    if news["source"] in ("newsapi",):
+    if news["source"] == "newsapi":
         combined = round(fg["score"] * 0.5 + news["score"] * 0.5, 2)
     else:
         combined = fg["score"]
