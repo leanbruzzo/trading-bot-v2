@@ -27,6 +27,7 @@ from modules.order_executor import (
     setup_symbol, get_balance, get_klines, get_current_price,
     open_long, open_short, close_position, get_open_positions
 )
+from modules.sheets_logger import log_trade_to_sheets
 from modules.notifier import (
     notify_trade_open, notify_trade_close, notify_risk_alert,
     notify_bot_stopped, notify_flash_crash, notify_daily_summary,
@@ -71,6 +72,7 @@ def save_trade_to_history(record: dict):
     with open(TRADE_HISTORY_FILE, "w") as f:
         json.dump(history, f, indent=2)
     logger.info(f"📝 Trade guardado: {record['symbol']} {record['side']} P&L=${record['pnl']:+.2f}")
+    log_trade_to_sheets(record)
 
 
 def klines_to_df(candles: list) -> pd.DataFrame:
