@@ -5,6 +5,8 @@ import json
 import os
 import requests
 from flask import Flask, jsonify
+import gspread
+from google.oauth2.service_account import Credentials
 
 app = Flask(__name__)
 
@@ -17,6 +19,51 @@ def load_json(path):
         with open(path) as f:
             return json.load(f)
     return {} if path.endswith("state.json") else []
+
+def load_history_from_sheets():
+    """Carga el historial de trades desde Google Sheets."""
+    try:
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive",
+        ]
+        credentials_info = {
+            "type": "service_account",
+            "project_id": "dental-studio-470921",
+            "private_key_id": "",
+            "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDFeXb+kV5Dm4yk\nJBs7Ll9qtaM3TKjXs4uSZ8tzfA6ENZ51+YQ1lanA9XpdaOn3n031kwXh7OiCBEhz\njh/T50ycbT0FvFj0JBdiDafQs6wFFMt7gs0+//OwXldIqqPMS0CLnav73l/kAmHg\nvK5MCES5+sHGp1TbsMc6nQiFQnXt5daKffxa4sPsG8bDZjNafgH7rZLb/Bky9r4O\npubnPZ6Q8RMpcAzq+R7aJHMhXiHbGVTXbMIqnXrPCsBHhsKmWtUzOtXirr5ePTau\nPRoXapWkRROKsZmXxJn+4onN6MuS8kwKCciXw1IKVWp5mDK0wyFew96BNU2lrvEx\n4+UGkpIhAgMBAAECggEAJUQlomdtDl2rtisxL2MyMwlZpp0zLNevgn7PfHkAJU+Y\nGqPuoQ0gJq+8uqWKp8YauHoZLVhfzW+A+7upwnvfL5MG5c70S4iHGCRDE+XgU+on\nd2TJFndHdfRrzOUU+cAGy4JDG0pNNtKDRZ3d16/kxmMtz+8ymq36/xL08W8IIc99\n0QXgvc8RktZHneh2CY6Pu5kE/Aa43Qg1Y20TdfJARZJA3FuhLbhfzgbYOBoT5eBG\ncBafLWPUmSqSpg9cjCU2Kz9Z8Gj8/57lS+EilrucknLLFWCpy+gqRFy088pwvbz6\nGi+2SgkKw+OATyWdgIdW4artgNyBZZJod5wYsXKMtQKBgQDrPfQK0riw4OciVpS3\nxAeXbF+laWudKm093JQtFoV3X+yxeaQfGvzfNa7eYOFWR0zgBnmDSDufHpcluvfn\nvXNo5LklmXlx++cyLpRjYF1CWhZt4739Chp6F8MG1j5cejjij+u7zu6d1UX0kep6\na0cBZB6V2zwT+FTMmPofwUU93QKBgQDW5lqupPc8I26B3Tzz/P40vTWlWhqwVZ5h\n7PsLGYyvlLFOvVl2dxOvPOjT9mrxPXhMTP4rUX6Kwu1T9nWEbzWQzMJ7o0lbizv2\n5Mu2EijiioXMrocKrP5HKGx9ZPAfJJx/sv3hCDRPwahxV80rPbnXQMXJu0xqFdg9\njLG7bWwLFQKBgAUVKZiyRNtNgLD1PfFagu96n/Zq+LBEomebxHfU7L1PjUWoYyto\n4d3Qwx566WN71uVgPm/ft6oQdyORjpmrNjsl9foh/sW/s5cZ+orLIji0yZdGPGyj\nMz9AFC6pol9NJL2Abo94QR+X5BMMtAxBFR+qkh6axgmIbAyfoYfeHSjhAoGAZet2\nUqH2h9UeEgVFZUo1nfmmubdUNRFGPpdQMOF7McLJnNh814x+D3xJyE10RtmqdjWF\nzjGmXFU6jbmz3o2H0BbsngrBPeN5Gw1D+CQAtACSmJKlhVCqgEERwx7eK0cH2iCf\n+9wSQ0lLhAXqTnnF6+rSY2yrPx0BI5/Yo1WwCkkCgYEApB8RPZqb0wqI61lgESr1\n8T6JviHURJ1teb43VdzNQ09ydnJrTvKaHPfUuDSdMRVdAf0J8iqh3tQ3nRGbWW3K\nJwYZFFXLVvevo4TE3k5Z2v6Qj/+/gHJevFX9QLnwqGjgpTKtA6l3lTHQkIYcc0Wv\neEBdWXeF8AODUhfDCp+3vNY=\n-----END PRIVATE KEY-----\n",
+            "client_email": "trading-bot@dental-studio-470921.iam.gserviceaccount.com",
+            "client_id": "",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+        creds  = Credentials.from_service_account_info(credentials_info, scopes=scopes)
+        client = gspread.authorize(creds)
+        sheet  = client.open_by_key("11ktL1p2SdkJLsjFrepG_1bkeH20G6FzynnQ0eXT4KTk").sheet1
+        rows   = sheet.get_all_records()
+
+        history = []
+        for r in rows:
+            history.append({
+                "symbol":           r.get("symbol", ""),
+                "side":             r.get("side", ""),
+                "entry_price":      float(r.get("entry_price", 0) or 0),
+                "exit_price":       float(r.get("exit_price", 0) or 0),
+                "pnl":              float(r.get("pnl", 0) or 0),
+                "reason_close":     r.get("reason_close", ""),
+                "partial_tp_taken": r.get("partial_tp", "False") == "True",
+                "opened_at":        r.get("opened_at", ""),
+                "closed_at":        r.get("closed_at", ""),
+                "duration_hours":   float(r.get("duration_hours", 0) or 0),
+                "analysis_open": {
+                    "regime":        r.get("regime", ""),
+                    "rsi":           float(r.get("rsi", 0) or 0),
+                    "combined_score": float(r.get("combined_score", 0) or 0),
+                },
+            })
+        return history
+    except Exception as e:
+        return []
 
 def get_current_prices(symbols):
     """Obtiene precios actuales de Binance para los símbolos dados."""
@@ -493,15 +540,13 @@ def index():
 
 @app.route("/api/data")
 def api_data():
-    history     = load_json(TRADE_HISTORY_FILE)
+    history     = load_history_from_sheets()
     state       = load_json(RISK_STATE_FILE)
     open_trades = load_json(OPEN_TRADES_FILE)
 
-    # Asegurarse que open_trades es un dict
     if isinstance(open_trades, list):
         open_trades = {}
 
-    # Obtener precios actuales para posiciones abiertas
     symbols = list(open_trades.keys())
     prices  = get_current_prices(symbols) if symbols else {}
 
