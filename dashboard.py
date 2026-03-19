@@ -3,6 +3,7 @@ DASHBOARD: Servidor web para visualizar P&L e historial de trades.
 """
 import json
 import os
+import requests
 from flask import Flask, jsonify
 
 app = Flask(__name__)
@@ -16,6 +17,21 @@ def load_json(path):
         with open(path) as f:
             return json.load(f)
     return {} if path.endswith("state.json") else []
+
+def get_current_prices(symbols):
+    """Obtiene precios actuales de Binance para los símbolos dados."""
+    prices = {}
+    try:
+        for symbol in symbols:
+            resp = requests.get(
+                f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}",
+                timeout=5
+            )
+            if resp.status_code == 200:
+                prices[symbol] = float(resp.json()["price"])
+    except Exception:
+        pass
+    return prices
 
 HTML = """
 <!DOCTYPE html>
@@ -33,7 +49,7 @@ HTML = """
   .header .dot { width: 10px; height: 10px; background: #00ff88; border-radius: 50%; animation: pulse 2s infinite; }
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
   .container { padding: 25px 30px; max-width: 1300px; margin: 0 auto; }
-  .period-selector { display: flex; gap: 10px; margin-bottom: 25px; }
+  .period-selector { display: flex; gap: 10px; margin-bottom: 25px; flex-wrap: wrap; }
   .period-btn { padding: 8px 20px; border-radius: 8px; border: 1px solid #2a2a4a; background: #1a1a2e; color: #888; cursor: pointer; font-size: 13px; transition: all 0.2s; }
   .period-btn.active { background: #6c63ff; color: #fff; border-color: #6c63ff; }
   .metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 15px; margin-bottom: 25px; }
@@ -45,7 +61,9 @@ HTML = """
   .charts-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; margin-bottom: 25px; }
   .chart-card { background: #1a1a2e; border-radius: 12px; padding: 20px; border: 1px solid #2a2a4a; }
   .chart-card.full { grid-column: 1 / -1; }
-  .chart-card h2 { font-size: 14px; color: #aaa; margin-bottom: 15px; }
+  .chart-card h2 { font-size: 14px; color: #aaa; margin-bottom: 10px; display: flex; align-items: center; justify-content: space-between; }
+  .chart-btn { padding: 4px 12px; border-radius: 6px; border: 1px solid #2a2a4a; background: #0f0f1a; color: #888; cursor: pointer; font-size: 11px; }
+  .chart-btn.active { background: #6c63ff; color: #fff; border-color: #6c63ff; }
   .table-card { background: #1a1a2e; border-radius: 12px; padding: 20px; border: 1px solid #2a2a4a; margin-bottom: 25px; }
   .table-card h2 { font-size: 14px; color: #aaa; margin-bottom: 15px; }
   table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -61,6 +79,8 @@ HTML = """
   .stat-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #16162a; font-size: 13px; }
   .stat-row:last-child { border: none; }
   .stat-label { color: #666; }
+  .price-up { color: #00ff88; font-size: 11px; }
+  .price-down { color: #ff4466; font-size: 11px; }
 </style>
 </head>
 <body>
@@ -72,10 +92,10 @@ HTML = """
 
   <!-- Selector de período -->
   <div class="period-selector">
-    <button class="period-btn active" onclick="setPeriod('all')">Todo</button>
-    <button class="period-btn" onclick="setPeriod('month')">Este mes</button>
-    <button class="period-btn" onclick="setPeriod('week')">Esta semana</button>
-    <button class="period-btn" onclick="setPeriod('today')">Hoy</button>
+    <button class="period-btn active" onclick="setPeriod('all', event)">Todo</button>
+    <button class="period-btn" onclick="setPeriod('month', event)">Este mes</button>
+    <button class="period-btn" onclick="setPeriod('week', event)">Esta semana</button>
+    <button class="period-btn" onclick="setPeriod('today', event)">Hoy</button>
   </div>
 
   <!-- Métricas principales -->
@@ -86,16 +106,28 @@ HTML = """
     <div class="table-card">
       <h2>📂 Posiciones Abiertas</h2>
       <table>
-        <thead><tr><th>Par</th><th>Dir.</th><th>Entrada</th><th>Stop</th><th>TP</th><th>Partial TP</th><th>P&L Estimado</th><th>Desde</th></tr></thead>
+        <thead>
+          <tr>
+            <th>Par</th><th>Dir.</th><th>Entrada</th><th>Precio Actual</th>
+            <th>Stop</th><th>TP Final</th><th>Partial TP</th><th>P&L Est.</th><th>Desde</th>
+          </tr>
+        </thead>
         <tbody id="open-tbody"></tbody>
       </table>
     </div>
   </div>
 
-  <!-- Gráficos fila 1 -->
+  <!-- P&L Acumulado con selector hora/día -->
   <div class="charts-grid">
     <div class="chart-card full">
-      <h2>📈 P&L Acumulado</h2>
+      <h2>
+        📈 P&L Acumulado
+        <div style="display:flex;gap:6px">
+          <button class="chart-btn active" id="btn-trade" onclick="setPnlView('trade', event)">Por Trade</button>
+          <button class="chart-btn" id="btn-hour" onclick="setPnlView('hour', event)">Por Hora</button>
+          <button class="chart-btn" id="btn-day" onclick="setPnlView('day', event)">Por Día</button>
+        </div>
+      </h2>
       <canvas id="pnlChart" height="60"></canvas>
     </div>
   </div>
@@ -168,13 +200,21 @@ HTML = """
 <script>
 let charts = {};
 let currentPeriod = 'all';
+let currentPnlView = 'trade';
 let allData = null;
 
-function setPeriod(period) {
+function setPeriod(period, event) {
   currentPeriod = period;
   document.querySelectorAll('.period-btn').forEach(b => b.classList.remove('active'));
   event.target.classList.add('active');
   if (allData) renderAll(allData);
+}
+
+function setPnlView(view, event) {
+  currentPnlView = view;
+  document.querySelectorAll('.chart-btn').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  if (allData) renderPnlChart(filterByPeriod(allData.history, currentPeriod));
 }
 
 function filterByPeriod(history, period) {
@@ -182,14 +222,9 @@ function filterByPeriod(history, period) {
   return history.filter(t => {
     if (!t.closed_at) return false;
     const d = new Date(t.closed_at);
-    if (period === 'today') {
-      return d.toDateString() === now.toDateString();
-    } else if (period === 'week') {
-      const weekAgo = new Date(now); weekAgo.setDate(now.getDate() - 7);
-      return d >= weekAgo;
-    } else if (period === 'month') {
-      return d.getMonth() === now.getMonth() && d.getFullYear() === now.getFullYear();
-    }
+    if (period === 'today') return d.toDateString() === now.toDateString();
+    if (period === 'week') { const w = new Date(now); w.setDate(now.getDate()-7); return d >= w; }
+    if (period === 'month') return d.getMonth()===now.getMonth() && d.getFullYear()===now.getFullYear();
     return true;
   });
 }
@@ -198,34 +233,66 @@ function destroyChart(id) {
   if (charts[id]) { charts[id].destroy(); delete charts[id]; }
 }
 
+function renderPnlChart(history) {
+  destroyChart('pnl');
+  const sorted = [...history].sort((a,b) => new Date(a.closed_at)-new Date(b.closed_at));
+
+  let labels, values;
+
+  if (currentPnlView === 'trade') {
+    let cum = 0;
+    labels = sorted.map(t => t.closed_at.replace("T"," ").slice(0,16));
+    values = sorted.map(t => { cum += t.pnl; return +cum.toFixed(2); });
+
+  } else if (currentPnlView === 'hour') {
+    const byHour = {};
+    sorted.forEach(t => {
+      const h = t.closed_at.slice(0,13).replace("T"," ") + "h";
+      byHour[h] = (byHour[h]||0) + t.pnl;
+    });
+    let cum = 0;
+    labels = Object.keys(byHour).sort();
+    values = labels.map(h => { cum += byHour[h]; return +cum.toFixed(2); });
+
+  } else {
+    const byDay = {};
+    sorted.forEach(t => {
+      const d = t.closed_at.slice(0,10);
+      byDay[d] = (byDay[d]||0) + t.pnl;
+    });
+    let cum = 0;
+    labels = Object.keys(byDay).sort();
+    values = labels.map(d => { cum += byDay[d]; return +cum.toFixed(2); });
+  }
+
+  charts['pnl'] = new Chart(document.getElementById("pnlChart"), {
+    type: "line",
+    data: { labels, datasets: [{ label: "P&L Acumulado (USDT)", data: values, borderColor: "#6c63ff", backgroundColor: "rgba(108,99,255,0.08)", pointBackgroundColor: values.map(v => v>=0?"#00ff88":"#ff4466"), tension: 0.3, fill: true }] },
+    options: { plugins: { legend: { labels: { color: "#666" } } }, scales: { x: { ticks: { color: "#555", maxTicksLimit: 12 }, grid: { color: "#16162a" } }, y: { ticks: { color: "#666" }, grid: { color: "#2a2a4a" } } } }
+  });
+}
+
 function renderAll(data) {
-  const { state, open_trades } = data;
+  const { state, open_trades, prices } = data;
   const history = filterByPeriod(data.history, currentPeriod);
+  const sorted  = [...history].sort((a,b) => new Date(a.closed_at)-new Date(b.closed_at));
 
   // ── Métricas ──────────────────────────────────────────────────────────────
-  const wins      = history.filter(t => t.pnl > 0).length;
-  const losses    = history.filter(t => t.pnl <= 0).length;
-  const winrate   = history.length > 0 ? ((wins / history.length) * 100).toFixed(1) : 0;
-  const totalPnl  = history.reduce((a, t) => a + t.pnl, 0);
-  const avgPnl    = history.length > 0 ? (totalPnl / history.length).toFixed(2) : 0;
-  const bestTrade = history.length > 0 ? Math.max(...history.map(t => t.pnl)) : 0;
-  const worstTrade= history.length > 0 ? Math.min(...history.map(t => t.pnl)) : 0;
+  const wins       = history.filter(t => t.pnl > 0).length;
+  const losses     = history.filter(t => t.pnl <= 0).length;
+  const winrate    = history.length > 0 ? ((wins/history.length)*100).toFixed(1) : 0;
+  const totalPnl   = history.reduce((a,t) => a+t.pnl, 0);
+  const avgPnl     = history.length > 0 ? (totalPnl/history.length).toFixed(2) : 0;
+  const bestTrade  = history.length > 0 ? Math.max(...history.map(t=>t.pnl)) : 0;
+  const worstTrade = history.length > 0 ? Math.min(...history.map(t=>t.pnl)) : 0;
 
-  // Drawdown máximo
-  const sorted = [...history].sort((a,b) => new Date(a.closed_at)-new Date(b.closed_at));
-  let peak = 0, cum = 0, maxDD = 0;
-  sorted.forEach(t => {
-    cum += t.pnl;
-    if (cum > peak) peak = cum;
-    const dd = peak - cum;
-    if (dd > maxDD) maxDD = dd;
-  });
+  let peak=0, cum=0, maxDD=0;
+  sorted.forEach(t => { cum+=t.pnl; if(cum>peak) peak=cum; const dd=peak-cum; if(dd>maxDD) maxDD=dd; });
 
-  // Racha
-  let maxWinStreak = 0, maxLossStreak = 0, curWin = 0, curLoss = 0;
+  let maxWinStreak=0, maxLossStreak=0, curWin=0, curLoss=0;
   sorted.forEach(t => {
-    if (t.pnl > 0) { curWin++; curLoss = 0; maxWinStreak = Math.max(maxWinStreak, curWin); }
-    else { curLoss++; curWin = 0; maxLossStreak = Math.max(maxLossStreak, curLoss); }
+    if(t.pnl>0){curWin++;curLoss=0;maxWinStreak=Math.max(maxWinStreak,curWin);}
+    else{curLoss++;curWin=0;maxLossStreak=Math.max(maxLossStreak,curLoss);}
   });
 
   document.getElementById("metrics").innerHTML = `
@@ -243,41 +310,49 @@ function renderAll(data) {
   // ── Posiciones abiertas ───────────────────────────────────────────────────
   const openKeys = Object.keys(open_trades);
   document.getElementById("open-tbody").innerHTML = openKeys.length === 0
-    ? `<tr><td colspan="8" style="color:#555;text-align:center;padding:20px">Sin posiciones abiertas</td></tr>`
+    ? `<tr><td colspan="9" style="color:#555;text-align:center;padding:20px">Sin posiciones abiertas</td></tr>`
     : openKeys.map(symbol => {
         const t = open_trades[symbol];
-        const partial = t.partial_done ? "✅ Tomado" : "⏳ Pendiente";
-        const since   = t.opened_at ? t.opened_at.replace("T"," ").slice(0,16) : "-";
+        const currentPrice = prices[symbol] || null;
+        let pnlEst = '-';
+        let pnlClass = 'white';
+        let priceDisplay = '-';
+
+        if (currentPrice) {
+          const rawPnl = t.side === 'LONG'
+            ? (currentPrice - t.entry) * t.qty
+            : (t.entry - currentPrice) * t.qty;
+          pnlEst   = `${rawPnl>=0?'+':''}$${rawPnl.toFixed(2)}`;
+          pnlClass = rawPnl >= 0 ? 'green' : 'red';
+
+          const priceDiff = ((currentPrice - t.entry) / t.entry * 100).toFixed(2);
+          const diffClass = priceDiff >= 0 ? 'price-up' : 'price-down';
+          priceDisplay = `$${currentPrice.toLocaleString()} <span class="${diffClass}">(${priceDiff>=0?'+':''}${priceDiff}%)</span>`;
+        }
+
+        const partial     = t.partial_done ? "✅ Tomado" : `⏳ $${(t.partial_tp||0).toLocaleString()}`;
+        const since       = t.opened_at ? t.opened_at.replace("T"," ").slice(0,16) : "-";
+
         return `<tr>
           <td><b>${symbol}</b></td>
           <td><span class="badge badge-${t.side.toLowerCase()}">${t.side}</span></td>
           <td>$${(t.entry||0).toLocaleString()}</td>
+          <td>${priceDisplay}</td>
           <td>$${(t.stop||0).toLocaleString()}</td>
           <td>$${(t.tp||0).toLocaleString()}</td>
           <td>${partial}</td>
-          <td>-</td>
+          <td class="${pnlClass}"><b>${pnlEst}</b></td>
           <td>${since}</td>
         </tr>`;
       }).join("");
 
   // ── P&L Acumulado ─────────────────────────────────────────────────────────
-  destroyChart('pnl');
-  let cumPnl = 0;
-  const pnlLabels = sorted.map(t => t.closed_at.replace("T"," ").slice(0,16));
-  const pnlValues = sorted.map(t => { cumPnl += t.pnl; return +cumPnl.toFixed(2); });
-  charts['pnl'] = new Chart(document.getElementById("pnlChart"), {
-    type: "line",
-    data: { labels: pnlLabels, datasets: [{ label: "P&L Acumulado (USDT)", data: pnlValues, borderColor: "#6c63ff", backgroundColor: "rgba(108,99,255,0.08)", pointBackgroundColor: pnlValues.map(v => v>=0?"#00ff88":"#ff4466"), tension: 0.3, fill: true }] },
-    options: { plugins: { legend: { labels: { color: "#666" } } }, scales: { x: { ticks: { color: "#555", maxTicksLimit: 10 }, grid: { color: "#16162a" } }, y: { ticks: { color: "#666" }, grid: { color: "#2a2a4a" } } } }
-  });
+  renderPnlChart(history);
 
   // ── P&L por Día ──────────────────────────────────────────────────────────
   destroyChart('daily');
   const byDay = {};
-  history.forEach(t => {
-    const day = t.closed_at ? t.closed_at.slice(0,10) : 'unknown';
-    byDay[day] = (byDay[day] || 0) + t.pnl;
-  });
+  history.forEach(t => { const d=t.closed_at?t.closed_at.slice(0,10):'?'; byDay[d]=(byDay[d]||0)+t.pnl; });
   const dayKeys = Object.keys(byDay).sort();
   charts['daily'] = new Chart(document.getElementById("dailyChart"), {
     type: "bar",
@@ -288,7 +363,7 @@ function renderAll(data) {
   // ── P&L por Activo ────────────────────────────────────────────────────────
   destroyChart('asset');
   const byAsset = {};
-  history.forEach(t => { byAsset[t.symbol] = (byAsset[t.symbol]||0) + t.pnl; });
+  history.forEach(t => { byAsset[t.symbol]=(byAsset[t.symbol]||0)+t.pnl; });
   const assetKeys = Object.keys(byAsset);
   charts['asset'] = new Chart(document.getElementById("assetChart"), {
     type: "bar",
@@ -300,9 +375,9 @@ function renderAll(data) {
   destroyChart('reason');
   const byReason = {};
   history.forEach(t => {
-    const r = t.reason_close || 'Desconocido';
-    const key = r.includes('Stop') ? 'Stop-Loss' : r.includes('Take-Profit') ? 'Take-Profit' : r.includes('Señal') ? 'Señal Invertida' : r;
-    byReason[key] = (byReason[key]||0) + 1;
+    const r = t.reason_close||'?';
+    const key = r.includes('Stop')?'Stop-Loss':r.includes('Take-Profit')?'Take-Profit':r.includes('Señal')?'Señal Invertida':r;
+    byReason[key]=(byReason[key]||0)+1;
   });
   charts['reason'] = new Chart(document.getElementById("reasonChart"), {
     type: "doughnut",
@@ -312,69 +387,54 @@ function renderAll(data) {
 
   // ── LONG vs SHORT ─────────────────────────────────────────────────────────
   destroyChart('side');
-  const longTrades  = history.filter(t => t.side === 'LONG');
-  const shortTrades = history.filter(t => t.side === 'SHORT');
-  const longPnl  = longTrades.reduce((a,t) => a+t.pnl, 0);
-  const shortPnl = shortTrades.reduce((a,t) => a+t.pnl, 0);
-  const longWR   = longTrades.length > 0 ? (longTrades.filter(t=>t.pnl>0).length/longTrades.length*100).toFixed(1) : 0;
-  const shortWR  = shortTrades.length > 0 ? (shortTrades.filter(t=>t.pnl>0).length/shortTrades.length*100).toFixed(1) : 0;
+  const longT=history.filter(t=>t.side==='LONG'), shortT=history.filter(t=>t.side==='SHORT');
+  const longPnl=longT.reduce((a,t)=>a+t.pnl,0), shortPnl=shortT.reduce((a,t)=>a+t.pnl,0);
+  const longWR=longT.length>0?(longT.filter(t=>t.pnl>0).length/longT.length*100).toFixed(1):0;
+  const shortWR=shortT.length>0?(shortT.filter(t=>t.pnl>0).length/shortT.length*100).toFixed(1):0;
   charts['side'] = new Chart(document.getElementById("sideChart"), {
     type: "bar",
-    data: {
-      labels: [`LONG (${longTrades.length} trades, WR ${longWR}%)`, `SHORT (${shortTrades.length} trades, WR ${shortWR}%)`],
-      datasets: [{ label: "P&L Total", data: [+longPnl.toFixed(2), +shortPnl.toFixed(2)], backgroundColor: [longPnl>=0?"rgba(0,255,136,0.5)":"rgba(255,68,102,0.5)", shortPnl>=0?"rgba(0,255,136,0.5)":"rgba(255,68,102,0.5)"], borderColor: [longPnl>=0?"#00ff88":"#ff4466", shortPnl>=0?"#00ff88":"#ff4466"], borderWidth: 1 }]
-    },
+    data: { labels: [`LONG (${longT.length}, WR ${longWR}%)`,`SHORT (${shortT.length}, WR ${shortWR}%)`], datasets: [{ label: "P&L Total", data: [+longPnl.toFixed(2),+shortPnl.toFixed(2)], backgroundColor: [longPnl>=0?"rgba(0,255,136,0.5)":"rgba(255,68,102,0.5)",shortPnl>=0?"rgba(0,255,136,0.5)":"rgba(255,68,102,0.5)"], borderColor: [longPnl>=0?"#00ff88":"#ff4466",shortPnl>=0?"#00ff88":"#ff4466"], borderWidth: 1 }] },
     options: { plugins: { legend: { display: false } }, scales: { x: { ticks: { color: "#555" }, grid: { color: "#16162a" } }, y: { ticks: { color: "#666" }, grid: { color: "#2a2a4a" } } } }
   });
 
   // ── Win Rate por Régimen ──────────────────────────────────────────────────
   destroyChart('regime');
   const byRegime = {};
-  history.forEach(t => {
-    const r = t.analysis_open?.regime || 'Desconocido';
-    if (!byRegime[r]) byRegime[r] = { wins: 0, total: 0 };
-    byRegime[r].total++;
-    if (t.pnl > 0) byRegime[r].wins++;
-  });
+  history.forEach(t => { const r=t.analysis_open?.regime||'?'; if(!byRegime[r]) byRegime[r]={wins:0,total:0}; byRegime[r].total++; if(t.pnl>0) byRegime[r].wins++; });
   const regimeKeys = Object.keys(byRegime);
   charts['regime'] = new Chart(document.getElementById("regimeChart"), {
     type: "bar",
-    data: { labels: regimeKeys, datasets: [{ label: "Win Rate %", data: regimeKeys.map(k => +(byRegime[k].wins/byRegime[k].total*100).toFixed(1)), backgroundColor: "rgba(108,99,255,0.5)", borderColor: "#6c63ff", borderWidth: 1 }] },
-    options: { plugins: { legend: { display: false } }, scales: { x: { ticks: { color: "#555" }, grid: { color: "#16162a" } }, y: { ticks: { color: "#666", callback: v => v+'%' }, grid: { color: "#2a2a4a" }, max: 100 } } }
+    data: { labels: regimeKeys, datasets: [{ label: "Win Rate %", data: regimeKeys.map(k=>+(byRegime[k].wins/byRegime[k].total*100).toFixed(1)), backgroundColor: "rgba(108,99,255,0.5)", borderColor: "#6c63ff", borderWidth: 1 }] },
+    options: { plugins: { legend: { display: false } }, scales: { x: { ticks: { color: "#555" }, grid: { color: "#16162a" } }, y: { ticks: { color: "#666", callback: v=>v+'%' }, grid: { color: "#2a2a4a" }, max: 100 } } }
   });
 
   // ── Win Rate por Score ────────────────────────────────────────────────────
   destroyChart('score');
-  const scoreGroups = { 'Baja (0.35-0.50)': {w:0,t:0}, 'Media (0.50-0.70)': {w:0,t:0}, 'Alta (>0.70)': {w:0,t:0} };
-  history.forEach(t => {
-    const s = Math.abs(t.analysis_open?.combined_score || 0);
-    const g = s > 0.70 ? 'Alta (>0.70)' : s > 0.50 ? 'Media (0.50-0.70)' : 'Baja (0.35-0.50)';
-    scoreGroups[g].t++;
-    if (t.pnl > 0) scoreGroups[g].w++;
-  });
+  const sg = {'Baja (0.45-0.50)':{w:0,t:0},'Media (0.50-0.70)':{w:0,t:0},'Alta (>0.70)':{w:0,t:0}};
+  history.forEach(t => { const s=Math.abs(t.analysis_open?.combined_score||0); const g=s>0.70?'Alta (>0.70)':s>0.50?'Media (0.50-0.70)':'Baja (0.45-0.50)'; sg[g].t++; if(t.pnl>0) sg[g].w++; });
   charts['score'] = new Chart(document.getElementById("scoreChart"), {
     type: "bar",
-    data: { labels: Object.keys(scoreGroups), datasets: [{ label: "Win Rate %", data: Object.keys(scoreGroups).map(k => scoreGroups[k].t > 0 ? +(scoreGroups[k].w/scoreGroups[k].t*100).toFixed(1) : 0), backgroundColor: ["rgba(0,191,255,0.5)","rgba(108,99,255,0.5)","rgba(255,215,0,0.5)"], borderColor: ["#00bfff","#6c63ff","#ffd700"], borderWidth: 1 }] },
-    options: { plugins: { legend: { display: false } }, scales: { x: { ticks: { color: "#555" }, grid: { color: "#16162a" } }, y: { ticks: { color: "#666", callback: v => v+'%' }, grid: { color: "#2a2a4a" }, max: 100 } } }
+    data: { labels: Object.keys(sg), datasets: [{ label: "Win Rate %", data: Object.keys(sg).map(k=>sg[k].t>0?+(sg[k].w/sg[k].t*100).toFixed(1):0), backgroundColor: ["rgba(0,191,255,0.5)","rgba(108,99,255,0.5)","rgba(255,215,0,0.5)"], borderColor: ["#00bfff","#6c63ff","#ffd700"], borderWidth: 1 }] },
+    options: { plugins: { legend: { display: false } }, scales: { x: { ticks: { color: "#555" }, grid: { color: "#16162a" } }, y: { ticks: { color: "#666", callback: v=>v+'%' }, grid: { color: "#2a2a4a" }, max: 100 } } }
   });
 
   // ── Duración promedio ─────────────────────────────────────────────────────
   destroyChart('duration');
-  const winDur  = history.filter(t=>t.pnl>0).map(t=>t.duration_hours||0);
-  const lossDur = history.filter(t=>t.pnl<=0).map(t=>t.duration_hours||0);
-  const avgWinDur  = winDur.length  > 0 ? (winDur.reduce((a,b)=>a+b,0)/winDur.length).toFixed(1)  : 0;
-  const avgLossDur = lossDur.length > 0 ? (lossDur.reduce((a,b)=>a+b,0)/lossDur.length).toFixed(1) : 0;
+  const winDur=history.filter(t=>t.pnl>0).map(t=>t.duration_hours||0);
+  const lossDur=history.filter(t=>t.pnl<=0).map(t=>t.duration_hours||0);
+  const avgWinDur=winDur.length>0?(winDur.reduce((a,b)=>a+b,0)/winDur.length).toFixed(1):0;
+  const avgLossDur=lossDur.length>0?(lossDur.reduce((a,b)=>a+b,0)/lossDur.length).toFixed(1):0;
   charts['duration'] = new Chart(document.getElementById("durationChart"), {
     type: "bar",
-    data: { labels: [`Ganadores (${winDur.length})`, `Perdedores (${lossDur.length})`], datasets: [{ label: "Duración promedio (horas)", data: [avgWinDur, avgLossDur], backgroundColor: ["rgba(0,255,136,0.5)","rgba(255,68,102,0.5)"], borderColor: ["#00ff88","#ff4466"], borderWidth: 1 }] },
+    data: { labels: [`Ganadores (${winDur.length})`,`Perdedores (${lossDur.length})`], datasets: [{ label: "Duración promedio (horas)", data: [avgWinDur,avgLossDur], backgroundColor: ["rgba(0,255,136,0.5)","rgba(255,68,102,0.5)"], borderColor: ["#00ff88","#ff4466"], borderWidth: 1 }] },
     options: { plugins: { legend: { display: false } }, scales: { x: { ticks: { color: "#555" }, grid: { color: "#16162a" } }, y: { ticks: { color: "#666" }, grid: { color: "#2a2a4a" } } } }
   });
 
   // ── Estadísticas Avanzadas ────────────────────────────────────────────────
-  const avgWin  = winDur.length  > 0 ? (history.filter(t=>t.pnl>0).reduce((a,t)=>a+t.pnl,0)/wins).toFixed(2) : 0;
-  const avgLoss = lossDur.length > 0 ? (history.filter(t=>t.pnl<=0).reduce((a,t)=>a+t.pnl,0)/losses).toFixed(2) : 0;
-  const rrRatio = avgLoss != 0 ? Math.abs(avgWin/avgLoss).toFixed(2) : '-';
-  const partialTaken = history.filter(t=>t.partial_tp_taken).length;
+  const avgWin=wins>0?(history.filter(t=>t.pnl>0).reduce((a,t)=>a+t.pnl,0)/wins).toFixed(2):0;
+  const avgLoss=losses>0?(history.filter(t=>t.pnl<=0).reduce((a,t)=>a+t.pnl,0)/losses).toFixed(2):0;
+  const rrRatio=avgLoss!=0?Math.abs(avgWin/avgLoss).toFixed(2):'-';
+  const partialTaken=history.filter(t=>t.partial_tp_taken).length;
   document.getElementById("advanced-stats").innerHTML = `
     <div class="stat-row"><span class="stat-label">Ganancia promedio (wins)</span><span class="green">+$${avgWin}</span></div>
     <div class="stat-row"><span class="stat-label">Pérdida promedio (losses)</span><span class="red">$${avgLoss}</span></div>
@@ -421,7 +481,7 @@ async function loadData() {
 }
 
 loadData();
-setInterval(loadData, 60000);
+setInterval(loadData, 30000);
 </script>
 </body>
 </html>
@@ -436,10 +496,16 @@ def api_data():
     history     = load_json(TRADE_HISTORY_FILE)
     state       = load_json(RISK_STATE_FILE)
     open_trades = load_json(OPEN_TRADES_FILE)
+
+    # Obtener precios actuales para posiciones abiertas
+    symbols = list(open_trades.keys())
+    prices  = get_current_prices(symbols) if symbols else {}
+
     return jsonify({
         "history":     history,
         "state":       state,
         "open_trades": open_trades,
+        "prices":      prices,
     })
 
 if __name__ == "__main__":
