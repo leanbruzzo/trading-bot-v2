@@ -497,6 +497,10 @@ def api_data():
     state       = load_json(RISK_STATE_FILE)
     open_trades = load_json(OPEN_TRADES_FILE)
 
+    # Asegurarse que open_trades es un dict
+    if isinstance(open_trades, list):
+        open_trades = {}
+
     # Obtener precios actuales para posiciones abiertas
     symbols = list(open_trades.keys())
     prices  = get_current_prices(symbols) if symbols else {}
