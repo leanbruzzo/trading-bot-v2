@@ -67,11 +67,13 @@ def load_trade_history() -> list:
 
 
 def save_trade_to_history(record: dict):
+    from modules.sheets_logger import STRATEGY_VERSION
+    record["strategy_version"] = STRATEGY_VERSION
     history = load_trade_history()
     history.append(record)
     with open(TRADE_HISTORY_FILE, "w") as f:
         json.dump(history, f, indent=2)
-    logger.info(f"📝 Trade guardado: {record['symbol']} {record['side']} P&L=${record['pnl']:+.2f}")
+    logger.info(f"📝 Trade guardado: {record['symbol']} {record['side']} P&L=${record['pnl']:+.2f} [{STRATEGY_VERSION}]")
     log_trade_to_sheets(record)
 
 
@@ -344,10 +346,10 @@ def emergency_close_all(reason: str):
 
 
 def run():
-    logger.info("🚀 Trading Bot iniciado — v2.0 (cooldown + señales mejoradas)")
+    logger.info("🚀 Trading Bot iniciado — v2.1 (RSI coherence + strategy versioning)")
     loaded = len(open_trades)
     send_message(
-        f"🚀 <b>Trading Bot iniciado v2.0</b>\n"
+        f"🚀 <b>Trading Bot iniciado v2.1</b>\n"
         f"Monitoreando: {', '.join(SYMBOLS)}\n"
         f"📐 Umbral señal: {SIGNAL_THRESHOLD} | Stop: 3.5% | TP: 7%\n"
         f"⏳ Cooldown inversión: {SIGNAL_REVERSAL_COOLDOWN} min\n"

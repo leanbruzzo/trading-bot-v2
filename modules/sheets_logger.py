@@ -13,7 +13,8 @@ SCOPES = [
     "https://www.googleapis.com/auth/drive",
 ]
 
-SPREADSHEET_ID = "11ktL1p2SdkJLsjFrepG_1bkeH20G6FzynnQ0eXT4KTk"
+SPREADSHEET_ID  = "11ktL1p2SdkJLsjFrepG_1bkeH20G6FzynnQ0eXT4KTk"
+STRATEGY_VERSION = "v2.0"
 
 CREDENTIALS_INFO = {
     "type": "service_account",
@@ -45,8 +46,11 @@ def log_trade_to_sheets(trade: dict):
 
         ao = trade.get("analysis_open", {})
 
+        # Asegurarse que el symbol viene del trade directamente
+        symbol = trade.get("symbol", "")
+
         row = [
-            trade.get("symbol", ""),
+            symbol,
             trade.get("side", ""),
             trade.get("entry_price", 0),
             trade.get("exit_price", 0),
@@ -59,10 +63,11 @@ def log_trade_to_sheets(trade: dict):
             ao.get("regime", ""),
             ao.get("rsi", ""),
             ao.get("combined_score", ""),
+            STRATEGY_VERSION,
         ]
 
         sheet.append_row(row)
-        logger.info(f"✅ Trade guardado en Sheets: {trade.get('symbol')} P&L=${trade.get('pnl'):+.2f}")
+        logger.info(f"✅ Trade guardado en Sheets: {symbol} {trade.get('side')} P&L=${trade.get('pnl'):+.2f} [{STRATEGY_VERSION}]")
 
     except Exception as e:
         logger.error(f"❌ Error guardando en Sheets: {e}")
