@@ -42,7 +42,7 @@ def log_trade_to_sheets(trade: dict):
     """Agrega una fila con el trade cerrado a Google Sheets."""
     try:
         client = get_client()
-        sheet  = client.open_by_key(SPREADSHEET_ID).sheet1
+        sheet  = client.open_by_key(SPREADSHEET_ID).worksheet("bot-trading-v2")
 
         ao = trade.get("analysis_open", {})
 
