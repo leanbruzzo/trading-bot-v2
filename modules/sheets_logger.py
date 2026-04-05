@@ -14,7 +14,7 @@ SCOPES = [
 ]
 
 SPREADSHEET_ID  = "11ktL1p2SdkJLsjFrepG_1bkeH20G6FzynnQ0eXT4KTk"
-STRATEGY_VERSION = "v2.0"
+STRATEGY_VERSION = "v2.0-roi-tp"
 
 CREDENTIALS_INFO = {
     "type": "service_account",

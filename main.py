@@ -11,7 +11,7 @@ from datetime import datetime
 
 from config.settings import (
     SYMBOLS, BOT_INTERVAL_SECONDS, SENTIMENT_WEIGHT, TECHNICAL_WEIGHT,
-    REGIME_WEIGHT, PARTIAL_TP_PCT, PARTIAL_TP_SIZE,
+    REGIME_WEIGHT, TP1_ROI_PCT, TP2_ROI_PCT, TP1_SIZE, TP2_SIZE,
     SIGNAL_THRESHOLD, SIGNAL_REVERSAL_COOLDOWN
 )
 from modules.regime_detector    import detect_regime
@@ -19,7 +19,7 @@ from modules.signal_generator   import calculate_signals
 from modules.sentiment_analyzer import get_combined_sentiment
 from modules.risk_manager       import (
     load_risk_state, save_risk_state, can_trade, calculate_position_size,
-    calculate_stop_loss, calculate_take_profit, calculate_partial_tp,
+    calculate_stop_loss, calculate_tp1, calculate_tp2,
     update_trailing_stop, register_pnl, is_flash_crash,
     load_open_trades, save_open_trades
 )
@@ -61,8 +61,11 @@ reversal_cooldown: dict = {}
 
 def load_trade_history() -> list:
     if os.path.exists(TRADE_HISTORY_FILE):
-        with open(TRADE_HISTORY_FILE) as f:
-            return json.load(f)
+        try:
+            with open(TRADE_HISTORY_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            logger.warning("trade_history.json corrupto — historial reiniciado")
     return []
 
 
@@ -157,42 +160,66 @@ def manage_open_trade(symbol: str, current_price: float, df: pd.DataFrame):
     trade = open_trades[symbol]
     side  = trade["side"]
 
-    # ── Partial Take Profit ───────────────────────────────────────────────────
-    if not trade["partial_done"]:
-        hit_partial = (
-            (side == "LONG"  and current_price >= trade["partial_tp"]) or
-            (side == "SHORT" and current_price <= trade["partial_tp"])
+    # ── TP1: 2% ROI → cierra 50%, SL a breakeven ─────────────────────────────
+    if not trade.get("partial1_done", False):
+        hit_tp1 = (
+            (side == "LONG"  and current_price >= trade["tp1"]) or
+            (side == "SHORT" and current_price <= trade["tp1"])
         )
-        if hit_partial:
-            partial_qty = round(trade["qty"] * PARTIAL_TP_SIZE, 4)
+        if hit_tp1:
+            partial_qty = round(trade["qty"] * TP1_SIZE, 4)
             order = close_position(symbol, side, partial_qty)
             if order:
                 pnl = abs(current_price - trade["entry"]) * partial_qty
                 register_pnl(pnl)
                 notify_trade_close(
                     symbol, side, trade["entry"], current_price,
-                    pnl, f"Take Profit parcial 50% (+{PARTIAL_TP_PCT*100:.0f}%)"
+                    pnl, f"TP1 50% (+{TP1_ROI_PCT*100:.0f}% ROI) → SL a breakeven"
                 )
-                logger.info(f"✅ Partial TP {symbol} — P&L parcial: ${pnl:+.2f}")
-                open_trades[symbol]["partial_done"] = True
-                open_trades[symbol]["stop"]         = trade["entry"]
-                open_trades[symbol]["qty"]          = round(trade["qty"] - partial_qty, 4)
+                logger.info(f"✅ TP1 {symbol} — P&L parcial: ${pnl:+.2f}")
+                open_trades[symbol]["partial1_done"] = True
+                open_trades[symbol]["stop"]          = trade["entry"]  # breakeven
+                open_trades[symbol]["qty"]           = round(trade["qty"] - partial_qty, 4)
                 save_open_trades(open_trades)
-                logger.info(f"🔒 Stop movido a breakeven: ${trade['entry']}")
+                logger.info(f"🔒 SL movido a breakeven: ${trade['entry']}")
             return
 
-    # ── Trailing stop ─────────────────────────────────────────────────────────
-    new_stop = update_trailing_stop(current_price, trade["stop"], side)
-    open_trades[symbol]["stop"] = new_stop
+    # ── TP2: 3% ROI → cierra 50% del resto, SL a nivel TP1 ──────────────────
+    if trade.get("partial1_done", False) and not trade.get("partial2_done", False):
+        hit_tp2 = (
+            (side == "LONG"  and current_price >= trade["tp2"]) or
+            (side == "SHORT" and current_price <= trade["tp2"])
+        )
+        if hit_tp2:
+            partial_qty = round(trade["qty"] * TP2_SIZE, 4)
+            order = close_position(symbol, side, partial_qty)
+            if order:
+                pnl = abs(current_price - trade["entry"]) * partial_qty
+                register_pnl(pnl)
+                notify_trade_close(
+                    symbol, side, trade["entry"], current_price,
+                    pnl, f"TP2 50% (+{TP2_ROI_PCT*100:.0f}% ROI) → SL a nivel TP1"
+                )
+                logger.info(f"✅ TP2 {symbol} — P&L parcial: ${pnl:+.2f}")
+                open_trades[symbol]["partial2_done"] = True
+                open_trades[symbol]["stop"]          = trade["tp1"]  # SL sube a TP1
+                open_trades[symbol]["qty"]           = round(trade["qty"] - partial_qty, 4)
+                save_open_trades(open_trades)
+                logger.info(f"🔒 SL movido a nivel TP1: ${trade['tp1']}")
+            return
+
+    # ── Free ride: trailing stop activo solo después de TP2 ──────────────────
+    if trade.get("partial2_done", False):
+        new_stop = update_trailing_stop(current_price, trade["stop"], side)
+        if new_stop != trade["stop"]:
+            open_trades[symbol]["stop"] = new_stop
+            save_open_trades(open_trades)
 
     # ── Verificaciones de cierre ──────────────────────────────────────────────
+    current_stop = open_trades[symbol]["stop"]
     hit_stop = (
-        (side == "LONG"  and current_price <= new_stop) or
-        (side == "SHORT" and current_price >= new_stop)
-    )
-    hit_tp = (
-        (side == "LONG"  and current_price >= trade["tp"]) or
-        (side == "SHORT" and current_price <= trade["tp"])
+        (side == "LONG"  and current_price <= current_stop) or
+        (side == "SHORT" and current_price >= current_stop)
     )
     new_signal, new_score, new_analysis = decide_action(symbol, df, current_price)
     signal_reversed = (
@@ -202,9 +229,12 @@ def manage_open_trade(symbol: str, current_price: float, df: pd.DataFrame):
 
     reason = None
     if hit_stop:
-        reason = "Stop-Loss" + (" (breakeven)" if trade["partial_done"] else "")
-    elif hit_tp:
-        reason = "Take-Profit final"
+        if not trade.get("partial1_done"):
+            reason = "Stop-Loss inicial (3.5%)"
+        elif not trade.get("partial2_done"):
+            reason = "Stop-Loss breakeven"
+        else:
+            reason = "Trailing Stop (free ride)"
     elif signal_reversed:
         reason = f"Señal invertida → {new_signal}"
 
@@ -230,7 +260,8 @@ def manage_open_trade(symbol: str, current_price: float, df: pd.DataFrame):
                 "qty":              trade["qty"],
                 "pnl":              round(pnl, 4),
                 "reason_close":     reason,
-                "partial_tp_taken": trade.get("partial_done", False),
+                "partial1_done":    trade.get("partial1_done", False),
+                "partial2_done":    trade.get("partial2_done", False),
                 "opened_at":        opened_at,
                 "closed_at":        closed_at,
                 "duration_hours":   round(duration, 2),
@@ -271,11 +302,11 @@ def open_new_trade(symbol: str, direction: str, current_price: float, score: flo
     if analysis is None:
         _, _, analysis = decide_action(symbol, df, current_price)
 
-    balance    = get_balance()
-    size       = calculate_position_size(balance, score)
-    stop       = calculate_stop_loss(current_price, direction)
-    tp         = calculate_take_profit(current_price, direction)
-    partial_tp = calculate_partial_tp(current_price, direction)
+    balance = get_balance()
+    size    = calculate_position_size(balance, score)
+    stop    = calculate_stop_loss(current_price, direction)
+    tp1     = calculate_tp1(current_price, direction)
+    tp2     = calculate_tp2(current_price, direction)
 
     if direction == "LONG":
         result = open_long(symbol, size)
@@ -283,17 +314,19 @@ def open_new_trade(symbol: str, direction: str, current_price: float, score: flo
         result = open_short(symbol, size)
 
     if result:
+        entry = result["entry_price"]
         open_trades[symbol] = {
-            "side":          direction,
-            "qty":           result["qty"],
-            "entry":         result["entry_price"],
-            "stop":          stop,
-            "tp":            tp,
-            "partial_tp":    partial_tp,
-            "partial_done":  False,
-            "signal_score":  score,
-            "opened_at":     datetime.now().isoformat(),
-            "analysis_open": analysis,
+            "side":           direction,
+            "qty":            result["qty"],
+            "entry":          entry,
+            "stop":           stop,
+            "tp1":            calculate_tp1(entry, direction),
+            "tp2":            calculate_tp2(entry, direction),
+            "partial1_done":  False,
+            "partial2_done":  False,
+            "signal_score":   score,
+            "opened_at":      datetime.now().isoformat(),
+            "analysis_open":  analysis,
         }
         save_open_trades(open_trades)
 
@@ -301,11 +334,13 @@ def open_new_trade(symbol: str, direction: str, current_price: float, score: flo
         save_risk_state(state)
 
         size_label = "🔥 ALTA" if abs(score) > 0.70 else "⚡ MEDIA" if abs(score) > 0.50 else "🔹 BAJA"
-        notify_trade_open(symbol, direction, result["entry_price"], stop, tp, size)
+        notify_trade_open(symbol, direction, entry, stop, tp2, size)
         send_message(
             f"📐 <b>Tamaño de posición:</b> {size_label} (score={score:.2f})\n"
-            f"🎯 <b>Partial TP al 4.5%:</b> ${partial_tp:,.2f}\n"
-            f"🔒 <b>Stop post-partial:</b> Breakeven (${result['entry_price']:,.2f})"
+            f"🎯 <b>TP1 (+2% ROI):</b> ${calculate_tp1(entry, direction):,.4f} → cierra 50%\n"
+            f"🎯 <b>TP2 (+3% ROI):</b> ${calculate_tp2(entry, direction):,.4f} → cierra 25%\n"
+            f"🚀 <b>Free ride:</b> trailing stop sobre 25% restante\n"
+            f"🛑 <b>SL inicial:</b> ${stop:,.4f} (3.5%)"
         )
 
 
@@ -346,13 +381,13 @@ def emergency_close_all(reason: str):
 
 
 def run():
-    logger.info("🚀 Trading Bot iniciado — v2.1 (RSI coherence + strategy versioning)")
+    logger.info("🚀 Trading Bot V2 iniciado — 5x leverage | TP por %ROI")
     loaded = len(open_trades)
     send_message(
-        f"🚀 <b>Trading Bot iniciado v2.1</b>\n"
+        f"🚀 <b>Trading Bot V2</b>\n"
         f"Monitoreando: {', '.join(SYMBOLS)}\n"
-        f"📐 Umbral señal: {SIGNAL_THRESHOLD} | Stop: 3.5% | TP: 7%\n"
-        f"⏳ Cooldown inversión: {SIGNAL_REVERSAL_COOLDOWN} min\n"
+        f"📐 Umbral señal: {SIGNAL_THRESHOLD} | SL: 3.5% | Leverage: 5x\n"
+        f"🎯 TP1: +2% ROI (50%) → TP2: +3% ROI (25%) → Free ride\n"
         f"📂 Posiciones recuperadas: <b>{loaded}</b>"
     )
 

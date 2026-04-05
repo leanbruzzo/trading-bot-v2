@@ -1,17 +1,18 @@
 # ============================================================
-#  TRADING BOT — CONFIGURACIÓN CENTRAL
+#  TRADING BOT V2 — CONFIGURACIÓN CENTRAL
+#  Estrategia: 3-level TP basado en %ROI con trailing stop
 # ============================================================
 import os
 
 # --- BINANCE API ---
-BINANCE_API_KEY    = os.getenv("BINANCE_API_KEY",    "TSUPwP3HI7xzj2sWkDsAAFjLAg75EO6Y7zl5aXD6Qb7VOmempkWT0otB4dNLnBRf")
-BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "q1jwt8nrodwDyWCPpvVhf7uos1azM1upSGvqpiIdzpRla6c21ADzDHeGYWG5vJrH")
+BINANCE_API_KEY    = os.getenv("BINANCE_API_KEY",    "")
+BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 BINANCE_TESTNET    = os.getenv("BINANCE_TESTNET", "False") == "True"
 DRY_RUN            = os.getenv("DRY_RUN", "True") == "True"
 
 # --- TELEGRAM ---
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8793819185:AAEHlCZHBk89cYLwrmKCfaG1oSFQC0UuW_c")
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "8763677371")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "")
 
 # --- ACTIVOS A OPERAR ---
 SYMBOLS = ["ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
@@ -19,11 +20,8 @@ SYMBOLS = ["ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
 # --- GESTIÓN DE RIESGO ---
 CAPITAL_TOTAL_USDT      = float(os.getenv("CAPITAL_TOTAL_USDT", "500"))
 MAX_POSITION_PCT        = 0.10
-STOP_LOSS_PCT           = 0.035       # ⬆ era 0.02 → más espacio para respirar
-TAKE_PROFIT_PCT         = 0.07        # ⬆ era 0.04 → mantiene ratio 1:2
-PARTIAL_TP_PCT          = 0.045       # ⬆ era 0.03 → proporcional al nuevo TP
-PARTIAL_TP_SIZE         = 0.50
-TRAILING_STOP_PCT       = 0.02        # ⬆ era 0.015 → proporcional
+STOP_LOSS_PCT           = 0.035       # 3.5% movimiento de precio
+TRAILING_STOP_PCT       = 0.02        # trailing stop para free ride
 MAX_LOSS_DAILY_PCT      = 0.04
 MAX_LOSS_WEEKLY_PCT     = 0.06
 MAX_LOSS_MONTHLY_PCT    = 0.08
@@ -31,14 +29,23 @@ FLASH_CRASH_PCT         = 0.10
 MAX_OPEN_POSITIONS      = 4
 CASH_RESERVE_PCT        = 0.10
 
+# --- TAKE PROFIT POR ROI (con 5x leverage) ---
+# ROI% / leverage = % movimiento de precio necesario
+TP1_ROI_PCT             = 0.02        # 2% ROI → 0.4% precio
+TP2_ROI_PCT             = 0.03        # 3% ROI → 0.6% precio
+TP1_PRICE_PCT           = TP1_ROI_PCT / 5   # 0.004
+TP2_PRICE_PCT           = TP2_ROI_PCT / 5   # 0.006
+TP1_SIZE                = 0.50        # cierra 50% en TP1
+TP2_SIZE                = 0.50        # cierra 50% del resto en TP2
+
 # --- POSITION SIZING DINÁMICO ---
 POSITION_SIZE_LOW       = 0.10
 POSITION_SIZE_MID       = 0.13
 POSITION_SIZE_HIGH      = 0.15
 
 # --- UMBRALES DE SEÑAL ---
-SIGNAL_THRESHOLD        = 0.45        # ⬆ era 0.35 → filtra señales débiles
-SIGNAL_REVERSAL_COOLDOWN = 20         # ✨ nuevo → minutos de espera tras señal invertida
+SIGNAL_THRESHOLD        = 0.45
+SIGNAL_REVERSAL_COOLDOWN = 20
 
 # --- PARÁMETROS TÉCNICOS ---
 TIMEFRAME               = "15m"
@@ -56,12 +63,12 @@ SENTIMENT_WEIGHT        = 0.10
 TECHNICAL_WEIGHT        = 0.55
 REGIME_WEIGHT           = 0.35
 SENTIMENT_MIN_SOURCES   = 2
-NEWSAPI_KEY             = os.getenv("NEWSAPI_KEY", "TU_NEWSAPI_KEY")
-SENTIMENT_CACHE_MINUTES = 60          # ✨ nuevo → cachea el F&G por 60 min
+NEWSAPI_KEY             = os.getenv("NEWSAPI_KEY", "")
+SENTIMENT_CACHE_MINUTES = 60
 
 # --- LOOP PRINCIPAL ---
 BOT_INTERVAL_SECONDS    = 60
 
 # --- FUTUROS BINANCE ---
-LEVERAGE                = 3
+LEVERAGE                = 5
 MARGIN_TYPE             = "ISOLATED"

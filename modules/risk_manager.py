@@ -6,10 +6,10 @@ import json
 import os
 from datetime import datetime, date
 from config.settings import (
-    CAPITAL_TOTAL_USDT, MAX_POSITION_PCT, STOP_LOSS_PCT, TAKE_PROFIT_PCT,
+    CAPITAL_TOTAL_USDT, MAX_POSITION_PCT, STOP_LOSS_PCT,
     TRAILING_STOP_PCT, MAX_LOSS_DAILY_PCT, MAX_LOSS_WEEKLY_PCT,
     MAX_LOSS_MONTHLY_PCT, FLASH_CRASH_PCT, MAX_OPEN_POSITIONS, CASH_RESERVE_PCT,
-    PARTIAL_TP_PCT, PARTIAL_TP_SIZE,
+    TP1_PRICE_PCT, TP2_PRICE_PCT,
     POSITION_SIZE_LOW, POSITION_SIZE_MID, POSITION_SIZE_HIGH
 )
 
@@ -31,8 +31,14 @@ def load_risk_state() -> dict:
         save_risk_state(state)
         return state
     if os.path.exists(RISK_STATE_FILE):
-        with open(RISK_STATE_FILE) as f:
-            return json.load(f)
+        try:
+            with open(RISK_STATE_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            import logging
+            logging.getLogger("bot.risk").warning(
+                f"risk_state.json corrupto — usando valores por defecto"
+            )
     return {
         "daily_pnl":      0.0,
         "weekly_pnl":     0.0,
@@ -58,8 +64,14 @@ def load_open_trades() -> dict:
         save_open_trades({})
         return {}
     if os.path.exists(TRADES_STATE_FILE):
-        with open(TRADES_STATE_FILE) as f:
-            return json.load(f)
+        try:
+            with open(TRADES_STATE_FILE) as f:
+                return json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            import logging
+            logging.getLogger("bot.risk").warning(
+                f"open_trades.json corrupto — asumiendo sin posiciones abiertas"
+            )
     return {}
 
 
@@ -128,18 +140,20 @@ def calculate_stop_loss(entry_price: float, side: str) -> float:
         return round(entry_price * (1 + STOP_LOSS_PCT), 4)
 
 
-def calculate_take_profit(entry_price: float, side: str) -> float:
+def calculate_tp1(entry_price: float, side: str) -> float:
+    """TP1: 2% ROI → 0.4% movimiento de precio con 5x leverage."""
     if side == "LONG":
-        return round(entry_price * (1 + TAKE_PROFIT_PCT), 4)
+        return round(entry_price * (1 + TP1_PRICE_PCT), 4)
     else:
-        return round(entry_price * (1 - TAKE_PROFIT_PCT), 4)
+        return round(entry_price * (1 - TP1_PRICE_PCT), 4)
 
 
-def calculate_partial_tp(entry_price: float, side: str) -> float:
+def calculate_tp2(entry_price: float, side: str) -> float:
+    """TP2: 3% ROI → 0.6% movimiento de precio con 5x leverage."""
     if side == "LONG":
-        return round(entry_price * (1 + PARTIAL_TP_PCT), 4)
+        return round(entry_price * (1 + TP2_PRICE_PCT), 4)
     else:
-        return round(entry_price * (1 - PARTIAL_TP_PCT), 4)
+        return round(entry_price * (1 - TP2_PRICE_PCT), 4)
 
 
 def update_trailing_stop(current_price: float, current_stop: float, side: str) -> float:
