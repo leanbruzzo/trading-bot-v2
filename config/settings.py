@@ -33,8 +33,8 @@ CASH_RESERVE_PCT        = 0.10
 # ROI% / leverage = % movimiento de precio necesario
 TP1_ROI_PCT             = 0.02        # 2% ROI → 0.4% precio
 TP2_ROI_PCT             = 0.03        # 3% ROI → 0.6% precio
-TP1_PRICE_PCT           = TP1_ROI_PCT / 5   # 0.004
-TP2_PRICE_PCT           = TP2_ROI_PCT / 5   # 0.006
+TP1_PRICE_PCT           = TP1_ROI_PCT / LEVERAGE   # 0.005 con 4x
+TP2_PRICE_PCT           = TP2_ROI_PCT / LEVERAGE   # 0.0075 con 4x
 TP1_SIZE                = 0.50        # cierra 50% en TP1
 TP2_SIZE                = 0.50        # cierra 50% del resto en TP2
 
@@ -70,5 +70,5 @@ SENTIMENT_CACHE_MINUTES = 60
 BOT_INTERVAL_SECONDS    = 60
 
 # --- FUTUROS BINANCE ---
-LEVERAGE                = 5
+LEVERAGE                = 4
 MARGIN_TYPE             = "ISOLATED"

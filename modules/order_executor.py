@@ -92,11 +92,11 @@ def get_klines(symbol: str, interval: str = "15m", limit: int = 100) -> list:
 
 
 def open_long(symbol: str, usdt_amount: float) -> dict | None:
-    """Abre posición LONG (BUY) con cantidad en USDT."""
+    """Abre posición LONG (BUY) con cantidad en USDT (usdt_amount = margen real)."""
     price = get_current_price(symbol)
     if not price:
         return None
-    qty = round(usdt_amount / price, 3)
+    qty = round(usdt_amount * LEVERAGE / price, 3)
     if DRY_RUN:
         logger.info(f"🔵 [SIMULADO] 📈 LONG abierto {symbol} — qty {qty} @ ~{price}")
         return {"side": "LONG", "symbol": symbol, "qty": qty, "entry_price": price, "order": {"dry_run": True}}
@@ -115,11 +115,11 @@ def open_long(symbol: str, usdt_amount: float) -> dict | None:
 
 
 def open_short(symbol: str, usdt_amount: float) -> dict | None:
-    """Abre posición SHORT (SELL) con cantidad en USDT."""
+    """Abre posición SHORT (SELL) con cantidad en USDT (usdt_amount = margen real)."""
     price = get_current_price(symbol)
     if not price:
         return None
-    qty = round(usdt_amount / price, 3)
+    qty = round(usdt_amount * LEVERAGE / price, 3)
     if DRY_RUN:
         logger.info(f"🔵 [SIMULADO] 📉 SHORT abierto {symbol} — qty {qty} @ ~{price}")
         return {"side": "SHORT", "symbol": symbol, "qty": qty, "entry_price": price, "order": {"dry_run": True}}
