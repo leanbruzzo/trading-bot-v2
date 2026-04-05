@@ -29,12 +29,12 @@ FLASH_CRASH_PCT         = 0.10
 MAX_OPEN_POSITIONS      = 4
 CASH_RESERVE_PCT        = 0.10
 
-# --- TAKE PROFIT POR ROI (con 5x leverage) ---
+# --- TAKE PROFIT POR ROI ---
 # ROI% / leverage = % movimiento de precio necesario
-TP1_ROI_PCT             = 0.02        # 2% ROI → 0.4% precio
-TP2_ROI_PCT             = 0.03        # 3% ROI → 0.6% precio
-TP1_PRICE_PCT           = TP1_ROI_PCT / LEVERAGE   # 0.005 con 4x
-TP2_PRICE_PCT           = TP2_ROI_PCT / LEVERAGE   # 0.0075 con 4x
+TP1_ROI_PCT             = 0.02        # 2% ROI
+TP2_ROI_PCT             = 0.03        # 3% ROI
+TP1_PRICE_PCT           = 0.005       # TP1_ROI_PCT / 4x = 0.005
+TP2_PRICE_PCT           = 0.0075      # TP2_ROI_PCT / 4x = 0.0075
 TP1_SIZE                = 0.50        # cierra 50% en TP1
 TP2_SIZE                = 0.50        # cierra 50% del resto en TP2
 
