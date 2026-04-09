@@ -20,7 +20,7 @@ SYMBOLS = ["ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT"]
 # --- GESTIÓN DE RIESGO ---
 CAPITAL_TOTAL_USDT      = float(os.getenv("CAPITAL_TOTAL_USDT", "500"))
 MAX_POSITION_PCT        = 0.10
-STOP_LOSS_PCT           = 0.035       # 3.5% movimiento de precio
+STOP_LOSS_PCT           = 0.015       # 1.5% movimiento de precio
 TRAILING_STOP_PCT       = 0.02        # trailing stop para free ride
 MAX_LOSS_DAILY_PCT      = 0.04
 MAX_LOSS_WEEKLY_PCT     = 0.06

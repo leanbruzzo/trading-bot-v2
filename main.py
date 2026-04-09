@@ -172,16 +172,32 @@ def manage_open_trade(symbol: str, current_price: float, df: pd.DataFrame):
             if order:
                 pnl = abs(current_price - trade["entry"]) * partial_qty
                 register_pnl(pnl)
-                notify_trade_close(
-                    symbol, side, trade["entry"], current_price,
-                    pnl, f"TP1 50% (+{TP1_ROI_PCT*100:.0f}% ROI) → SL a breakeven"
-                )
+                reason_tp1 = f"TP1 50% (+{TP1_ROI_PCT*100:.0f}% ROI) → SL a breakeven"
+                notify_trade_close(symbol, side, trade["entry"], current_price, pnl, reason_tp1)
                 logger.info(f"✅ TP1 {symbol} — P&L parcial: ${pnl:+.2f}")
                 open_trades[symbol]["partial1_done"] = True
                 open_trades[symbol]["stop"]          = trade["entry"]  # breakeven
                 open_trades[symbol]["qty"]           = round(trade["qty"] - partial_qty, 4)
                 save_open_trades(open_trades)
                 logger.info(f"🔒 SL movido a breakeven: ${trade['entry']}")
+                save_trade_to_history({
+                    "symbol":        symbol,
+                    "side":          side,
+                    "entry_price":   trade["entry"],
+                    "exit_price":    current_price,
+                    "qty":           partial_qty,
+                    "pnl":           round(pnl, 4),
+                    "reason_close":  reason_tp1,
+                    "partial1_done": True,
+                    "partial2_done": False,
+                    "opened_at":     trade.get("opened_at", datetime.now().isoformat()),
+                    "closed_at":     datetime.now().isoformat(),
+                    "duration_hours": round(
+                        (datetime.now() - datetime.fromisoformat(trade.get("opened_at", datetime.now().isoformat()))).total_seconds() / 3600, 2
+                    ),
+                    "analysis_open": trade.get("analysis_open", {}),
+                    "analysis_close": {},
+                })
             return
 
     # ── TP2: 3% ROI → cierra 50% del resto, SL a nivel TP1 ──────────────────
@@ -196,16 +212,32 @@ def manage_open_trade(symbol: str, current_price: float, df: pd.DataFrame):
             if order:
                 pnl = abs(current_price - trade["entry"]) * partial_qty
                 register_pnl(pnl)
-                notify_trade_close(
-                    symbol, side, trade["entry"], current_price,
-                    pnl, f"TP2 50% (+{TP2_ROI_PCT*100:.0f}% ROI) → SL a nivel TP1"
-                )
+                reason_tp2 = f"TP2 50% (+{TP2_ROI_PCT*100:.0f}% ROI) → SL a nivel TP1"
+                notify_trade_close(symbol, side, trade["entry"], current_price, pnl, reason_tp2)
                 logger.info(f"✅ TP2 {symbol} — P&L parcial: ${pnl:+.2f}")
                 open_trades[symbol]["partial2_done"] = True
                 open_trades[symbol]["stop"]          = trade["tp1"]  # SL sube a TP1
                 open_trades[symbol]["qty"]           = round(trade["qty"] - partial_qty, 4)
                 save_open_trades(open_trades)
                 logger.info(f"🔒 SL movido a nivel TP1: ${trade['tp1']}")
+                save_trade_to_history({
+                    "symbol":        symbol,
+                    "side":          side,
+                    "entry_price":   trade["entry"],
+                    "exit_price":    current_price,
+                    "qty":           partial_qty,
+                    "pnl":           round(pnl, 4),
+                    "reason_close":  reason_tp2,
+                    "partial1_done": True,
+                    "partial2_done": True,
+                    "opened_at":     trade.get("opened_at", datetime.now().isoformat()),
+                    "closed_at":     datetime.now().isoformat(),
+                    "duration_hours": round(
+                        (datetime.now() - datetime.fromisoformat(trade.get("opened_at", datetime.now().isoformat()))).total_seconds() / 3600, 2
+                    ),
+                    "analysis_open": trade.get("analysis_open", {}),
+                    "analysis_close": {},
+                })
             return
 
     # ── Free ride: trailing stop activo solo después de TP2 ──────────────────
@@ -230,7 +262,7 @@ def manage_open_trade(symbol: str, current_price: float, df: pd.DataFrame):
     reason = None
     if hit_stop:
         if not trade.get("partial1_done"):
-            reason = "Stop-Loss inicial (3.5%)"
+            reason = "Stop-Loss inicial (1.5%)"
         elif not trade.get("partial2_done"):
             reason = "Stop-Loss breakeven"
         else:
@@ -340,7 +372,7 @@ def open_new_trade(symbol: str, direction: str, current_price: float, score: flo
             f"🎯 <b>TP1 (+2% ROI):</b> ${calculate_tp1(entry, direction):,.4f} → cierra 50%\n"
             f"🎯 <b>TP2 (+3% ROI):</b> ${calculate_tp2(entry, direction):,.4f} → cierra 25%\n"
             f"🚀 <b>Free ride:</b> trailing stop sobre 25% restante\n"
-            f"🛑 <b>SL inicial:</b> ${stop:,.4f} (3.5%)"
+            f"🛑 <b>SL inicial:</b> ${stop:,.4f} (1.5%)"
         )
 
 
@@ -429,7 +461,7 @@ def run():
     send_message(
         f"🚀 <b>Trading Bot V2</b>\n"
         f"Monitoreando: {', '.join(SYMBOLS)}\n"
-        f"📐 Umbral señal: {SIGNAL_THRESHOLD} | SL: 3.5% | Leverage: 5x\n"
+        f"📐 Umbral señal: {SIGNAL_THRESHOLD} | SL: 1.5% | Leverage: 5x\n"
         f"🎯 TP1: +2% ROI (50%) → TP2: +3% ROI (25%) → Free ride\n"
         f"📂 Posiciones recuperadas: <b>{loaded}</b>"
     )
